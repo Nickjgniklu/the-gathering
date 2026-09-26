@@ -19,7 +19,7 @@ import cv2
 import numpy as np
 
 from . import table_scenes
-from .evaluate_tables import evaluate_quads
+from .evaluate_tables import per_card_hits
 from .image_bank import ArtBank, CardBank
 from .scene_geometry import quad_from_pose
 
@@ -51,13 +51,12 @@ class TableSceneGeometryTest(unittest.TestCase):
         self.assertLess(tl[1], bl[1])
         self.assertAlmostEqual(bl[1], br[1], places=4)
 
-    def test_multi_card_matching_rejects_duplicates_and_wrong_orientation(self):
+    def test_multi_card_matching_is_greedy_one_to_one_not_double_counted(self):
         left = quad_from_pose(40, 40, 20, 0, None)
         right = quad_from_pose(100, 100, 20, 0, None)
-        metrics = evaluate_quads([left, right], [left, left.copy(), np.roll(right, 2, axis=0)])
-        self.assertEqual(metrics["matched"], 2)
-        self.assertAlmostEqual(metrics["precision"], 2 / 3)
-        self.assertEqual(metrics["orientation_accuracy"], 0.5)
+        # Two proposals both land on `left`; only one can claim it, and `right` has none.
+        hits = per_card_hits([left, right], [left, left.copy()])
+        self.assertEqual(hits, [True, False])
 
 
 class SplitConfigTest(unittest.TestCase):

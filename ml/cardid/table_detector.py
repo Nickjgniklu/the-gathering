@@ -135,9 +135,7 @@ def decode_detections(
 ) -> list[tuple[np.ndarray, float]]:
     """One sample's (heat (1,S,S), pose (3,S,S), up (2,S,S)) -> [(quad, score), ...] in input
     pixels, highest score first. Peaks are local maxima of the sigmoid heatmap (a 3x3 max-pool
-    equality test, CenterNet's NMS-free peak picking), so no separate box-NMS is needed here --
-    `table_strategies.nms_quads` still runs downstream for consistency with the other
-    strategies, but this decoder rarely produces overlapping duplicates on its own."""
+    equality test, CenterNet's NMS-free peak picking), so no separate box-NMS is needed."""
     prob = torch.sigmoid(heat_logits)[0]  # (S, S)
     pooled = nn.functional.max_pool2d(prob[None, None], 3, stride=1, padding=1)[0, 0]
     peaks = (prob == pooled) & (prob > score_threshold)

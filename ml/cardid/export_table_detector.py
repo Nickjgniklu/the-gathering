@@ -24,9 +24,9 @@ Input/output contract for whoever wires this into the app:
 - Output: exactly `max_detections` (quad, score) pairs, sorted by descending score, in the
   input image's own pixel coordinates, in printed order (corner 0 is the card's top-left).
   Real cards run out before `max_detections` does on any normal table, so the low-score tail is
-  padding -- apply your own confidence threshold (0.3 is what training/evaluation here uses)
-  and, if you skip `table_strategies.nms_quads`, your own IoU suppression; this graph's peaks
-  are already CenterNet-style NMS-free, but two adjacent cells can still both clear threshold.
+  padding -- apply your own confidence threshold (0.3 is what training/evaluation here uses).
+  This graph's peaks are already CenterNet-style NMS-free, but two adjacent cells can still both
+  clear threshold, so a small IoU-based dedup on your side is worth keeping if you see doubles.
 """
 
 from __future__ import annotations

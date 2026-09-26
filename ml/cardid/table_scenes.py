@@ -19,8 +19,8 @@ Splits:
 
 - ``train`` sees every camera profile except the held-out one, and the "easy" arrangements.
 - ``val`` and ``test`` each get one held-out arrangement, plus the held-out camera profile
-  and their own background pool. ``val`` is for threshold tuning; ``test`` is frozen and
-  meant to be scored exactly once per strategy comparison.
+  and their own background pool. ``val`` is scored every epoch during training; ``test`` is
+  frozen and meant for a final, sparingly-run check, not for tuning against.
 - ``challenge`` reuses ``test``'s arrangement, camera profile and backgrounds but at higher
   photometric severity and crowded density, for glare/blur/occlusion/tiny-card slices.
 

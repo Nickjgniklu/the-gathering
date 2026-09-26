@@ -141,10 +141,10 @@ original module kept as the CLI and a re-exporting facade:
   both trainers; `envfile` parses `~/.config/cardid.env`.
 - `table_scenes` (full-table synthetic scenes for Super AI mode's multi-card detector) over
   `table_detector`/`table_scene_dataset`/`train_table_detector` (the dense detector, its
-  dataset, and training), `table_strategies` (the three detection strategies), and
-  `evaluate_tables`/`bench_tables`/`report_tables` (scoring, latency, and the HTML comparison
-  report) -- see "Table scenes and the Super AI mode strategy comparison" below for the full
-  walkthrough and commands.
+  dataset, and training), `evaluate_tables` (manifest/scoring helpers the trainer and exporter
+  share), `bench_tables` (render throughput), and `export_table_detector` (the ONNX export) --
+  see "Table scenes and the Super AI mode table detector" below for the full walkthrough and
+  commands.
 
 ## Full catalog (bigger machine)
 
@@ -656,7 +656,7 @@ some ROCm setups, so compare with `--no-pin` (both tools take it). The datasets 
 scenes and normalise on the device, so each sample is 196 KB through the queue rather than
 786 KB.
 
-## Table scenes and the Super AI mode strategy comparison
+## Table scenes and the Super AI mode table detector
 
 `cardid.table_scenes` renders full-table scenes (0-20 independently labelled cards, not one
 clicked card) for Super AI mode's multi-card detection work
@@ -686,58 +686,32 @@ committed; `--out` defaults to `~/the-gathering-cardid/table-scenes` (override w
 `CARDID_TABLE_SCENES_DIR` or `--out` -- e.g. a dedicated data drive) instead of `data/` precisely
 so a full-scale run does not have to be excluded by hand.
 
-### The three strategies
+### The table detector
 
-`table_strategies.py` implements the plan's three multi-card detection strategies behind one
-shared `Proposal` (quad + confidence + source) schema, so `evaluate_tables.evaluate_strategy`
-scores them identically:
+The Super AI mode plan (`.amp/in/super-ai-mode-plan.md`) called for comparing three detection
+strategies (a trained dense detector, a grid sweep over the existing click-conditioned localizer,
+and a hybrid of the two) before picking one to ship. That comparison ran: `table_detector.py`'s
+`TableCenterNet` -- a dense CenterNet-style head (card-presence heatmap + per-cell pose + up
+vector) over the same MobileNetV3-Small backbone/decoder shape the click-conditioned `CornerNet`
+uses, so an ImageNet-pretrained backbone transfers the same way -- won clearly on every measure
+that mattered (accuracy, one-pass latency, no dependency on the click-conditioned model), so this
+project now builds, trains, and exports only that path; the grid-sweep and hybrid strategies and
+their comparison-report tooling were removed once the decision was made.
 
-- **A** (`strategy_a_dense_detector`) is the plan's trained oriented-box detector:
-  `table_detector.TableCenterNet`, a dense CenterNet-style head (card-presence heatmap + per-cell
-  pose + up vector) over the same MobileNetV3-Small backbone/decoder shape the click-conditioned
-  `CornerNet` uses, so an ImageNet-pretrained backbone transfers the same way. Pass a loaded
-  `TableCenterNet` as `model`; without one it falls back to `dense_card_quads`, a classical
-  edge/contour proposal generator (`detect.find_card_quad` generalised from "the quad containing
-  this click" to "every quad like this anywhere"), so the strategy still runs before training
-  finishes or in tests. Train it with `train_table_detector.py` on a pre-rendered `table_scenes`
-  dataset (not rendered on the fly, unlike `train_detector.py`):
-
-  ```sh
-  uv run python -m cardid.train_table_detector --manifest-dir ~/the-gathering-cardid/table-scenes --run table-a-pretrained --epochs 80
-  uv run python -m cardid.train_table_detector --manifest-dir ~/the-gathering-cardid/table-scenes --run table-a-scratch --epochs 80 --no-pretrained
-  ```
-
-  Each epoch reports the training loss and, on a `val` subset, recall/precision at IoU 0.5
-  (`evaluate_tables.per_card_hits`) so the two variants stay comparable on the same metric the
-  report uses; checkpoints go to `data/runs/<run>/{last,best}.pt` with a `history.json`.
-- **B** (`strategy_b_grid_sweep`): the existing two-stage click-conditioned learned localizer
-  (`detector.Detector`) run at deterministic multi-scale grid points, clustered by IoU. The
-  plan's "no-new-detector-training baseline".
-- **C** (`strategy_c_hybrid`): a sparse grid of the cheap classical finder makes coarse
-  proposals, clustered by IoU, then the learned localizer refines each cluster's centroid once.
-
-None of the three identifies cards: that needs a trained `ArtIndex` embedding model this
-tooling does not have, so evaluation stops at detection geometry (exactly where the plan's own
-phase order stops before "export only the winner to ONNX/WASM").
-
-### Evaluating and comparing them
-
-`evaluate_tables.py` is the shared scoring harness (precision/recall/F1/AP at IoU 0.50/0.75,
-orientation accuracy, false-overlay rate, latency, and slices by occlusion/rotation/
-identifiable/setup/camera-profile); `bench_tables.py --strategy {a,b,c}` times one strategy
-against a manifest without scoring accuracy (`--table-model` swaps in a trained Strategy A);
-`report_tables.py` runs every strategy against the frozen `test` and `challenge` splits and
-writes `report.json` plus a visual `report.html` with comparison charts and an overlay gallery
-(ground truth vs. each strategy's proposals). `--strategy-a-model NAME CHECKPOINT` is repeatable,
-so the pretrained and from-scratch `TableCenterNet` runs above show up as separate rows next to
-the classical fallback and strategies B/C:
+Train it with `train_table_detector.py` on a pre-rendered `table_scenes` dataset (not rendered on
+the fly, unlike `train_detector.py`):
 
 ```sh
-uv run python -m cardid.train_detector --run table-demo --epochs 10 --samples 1500 --val 100 --batch 32
-uv run python -m cardid.report_tables ~/the-gathering-cardid/table-scenes --detector data/runs/table-demo/best.pt \
-  --strategy-a-model pretrained data/runs/table-a-pretrained/best.pt \
-  --strategy-a-model scratch data/runs/table-a-scratch/best.pt
+uv run python -m cardid.train_table_detector --manifest-dir ~/the-gathering-cardid/table-scenes --run table-a --epochs 80
 ```
+
+Each epoch reports the training loss and, on a `val` subset, recall/precision at IoU 0.5
+(`evaluate_tables.per_card_hits`); checkpoints go to `data/runs/<run>/{last,best}.pt` with a
+`history.json`. The backbone always starts ImageNet-pretrained: an early from-scratch comparison
+run reached only 78% recall / 99.5% precision after 63 epochs, against the pretrained backbone's
+95.8% recall / 99.9% precision converged by epoch 120 on the same dataset, so training a
+from-scratch variant is no longer supported here. None of this identifies cards: that needs a
+trained `ArtIndex` embedding model this tooling does not have.
 
 ### Exporting the dense detector for the rest of the app
 
@@ -753,7 +727,7 @@ low-score padding for the caller to threshold away. `--verify` compares the expo
 (onnxruntime) against the torch reference on real `test`-split scenes by greedy IoU matching:
 
 ```sh
-uv run python -m cardid.export_table_detector --checkpoint data/runs/table-a-pretrained/best.pt \
+uv run python -m cardid.export_table_detector --checkpoint data/runs/table-a/best.pt \
   --verify-manifest-dir ~/the-gathering-cardid/table-scenes --verify 80
 ```
 
