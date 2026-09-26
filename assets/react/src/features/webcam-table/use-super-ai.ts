@@ -232,13 +232,29 @@ export function useSuperAi(
 
   const request = useCallback(
     (target: string) => {
+      const now = Date.now()
+      if (now - (lastRequestRef.current.get(target) ?? -Infinity) < SUPER_AI_SCAN_INTERVAL_MS)
+        return false
+      // Your own board never leaves your browser at all: skip the peer transport (chunking,
+      // digest, the round trip) and recognize the frame you already have locally.
+      if (target === link.peerId) {
+        if (!videoEnabled()) return false
+        const captured = frame()
+        if (!captured) return false
+        lastRequestRef.current.set(target, now)
+        setStatus("scanning")
+        const data = bytes(captured.image.slice(captured.image.indexOf(",") + 1))
+        onFrame({ bytes: data, width: captured.width, height: captured.height })
+          .then(() => {
+            setLastCompleted(Date.now())
+            setStatus("idle")
+          })
+          .catch(() => setStatus("failed"))
+        return true
+      }
       if (pendingRef.current) return false
       const owner = link.participants.find((participant) => participant.peer_id === target)
       if (!owner || owner.camera_off || !canViewBoard(target, link.peerId, owner.reveal_to))
-        return false
-      if (target === link.peerId) return false
-      const now = Date.now()
-      if (now - (lastRequestRef.current.get(target) ?? -Infinity) < SUPER_AI_SCAN_INTERVAL_MS)
         return false
       const requestId = crypto.randomUUID()
       pendingRef.current = {
@@ -257,7 +273,7 @@ export function useSuperAi(
       setStatus("requesting")
       return true
     },
-    [clearPending, link, send],
+    [clearPending, frame, link, onFrame, send, videoEnabled],
   )
 
   const cancel = useCallback(() => {

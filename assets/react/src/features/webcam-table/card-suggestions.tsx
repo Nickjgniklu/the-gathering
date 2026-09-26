@@ -22,9 +22,12 @@ export type Recognition =
  * ~99% precision on real captures with the detector. */
 export const CLEAR_MARGIN = 0.08
 
-export function isClear(candidates: Identification["candidates"]): boolean {
+export function isClear(
+  candidates: Identification["candidates"],
+  margin: number = CLEAR_MARGIN,
+): boolean {
   const [first, second] = candidates
-  return first !== undefined && second !== undefined && first.score - second.score >= CLEAR_MARGIN
+  return first !== undefined && second !== undefined && first.score - second.score >= margin
 }
 
 interface Props {

@@ -138,3 +138,17 @@ it("persists view, camera, stats and sound choices without accepting malformed v
     superAi: true,
   })
 })
+
+it("defaults and persists the Super AI required lead", () => {
+  const first = renderHook(() => useTablePreferences(5))
+  expect(first.result.current.superAiMargin).toBe(0.08)
+  act(() => first.result.current.update({ superAiMargin: 0.12 }))
+  first.unmount()
+  const next = renderHook(() => useTablePreferences(5))
+  expect(next.result.current.superAiMargin).toBe(0.12)
+})
+
+it("clamps an out-of-range saved Super AI lead", () => {
+  localStorage.setItem("the-gathering:table-preferences:6", JSON.stringify({ superAiMargin: 5 }))
+  expect(renderHook(() => useTablePreferences(6)).result.current.superAiMargin).toBe(0.2)
+})

@@ -26,8 +26,8 @@ async function sha256(bytes: Uint8Array) {
   return [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, "0")).join("")
 }
 
-function harness(participants: TableParticipant[] = [owner]) {
-  const link: RoomLink = { peerId: "viewer", channel: null, spectator: false, participants }
+function harness(participants: TableParticipant[] = [owner], peerId = "viewer") {
+  const link: RoomLink = { peerId, channel: null, spectator: false, participants }
   let listener: {
     message?: (peerId: string, message: DataMessage) => void
     left?: (peerId: string) => void
@@ -184,4 +184,17 @@ it("rate-limits frame responses", async () => {
   responder.message({ type: "super_ai_frame_request", requestId: "second" })
   await Promise.resolve()
   expect(responder.send).toHaveBeenCalledTimes(3)
+})
+
+it("scans the local board without sending a frame through WebRTC", async () => {
+  const local = harness([{ ...owner, peer_id: "viewer" }], "viewer")
+  expect(local.hook.result.current.request("viewer")).toBe(true)
+  await waitFor(() =>
+    expect(local.onFrame).toHaveBeenCalledWith({
+      bytes: new Uint8Array([1, 2, 3]),
+      width: 2,
+      height: 2,
+    }),
+  )
+  expect(local.send).not.toHaveBeenCalled()
 })

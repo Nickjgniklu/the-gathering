@@ -7,6 +7,7 @@ import { isPublisherQuality } from "./media-policy"
 import { PanelSection } from "./panel-section"
 import type { RecognizerState } from "./recognition/use-recognizer"
 import { describeRecognizer } from "./side-panel-labels"
+import { SUPER_AI_MARGIN_MAX, SUPER_AI_MARGIN_MIN } from "./super-ai-overlay"
 import type { useTablePreferences } from "./table-preferences"
 import { CorrectionPreference, type useCorrectionUpload } from "./use-correction-upload"
 import type { useWebcamRoom } from "./use-webcam-room"
@@ -255,6 +256,26 @@ export function TableSettings({
         <p className="mt-2 text-[0.65rem] text-base-content/60">
           Requests a full camera frame from the visible board every 10 seconds. Frames and card
           matches stay in the two browsers and are never sent to the server.
+        </p>
+        <label className="mt-3 block">
+          <span className="flex items-center justify-between text-[0.65rem] text-base-content/60">
+            Required lead over runner-up
+            <span className="tabular-nums">{Math.round(preferences.superAiMargin * 100)}%</span>
+          </span>
+          <input
+            type="range"
+            className="range range-primary range-xs mt-1.5"
+            min={SUPER_AI_MARGIN_MIN}
+            max={SUPER_AI_MARGIN_MAX}
+            step={0.01}
+            onChange={(event) => preferences.update({ superAiMargin: Number(event.target.value) })}
+            value={preferences.superAiMargin}
+            aria-label="Super AI required match lead"
+          />
+        </label>
+        <p className="mt-1.5 text-[0.65rem] text-base-content/60">
+          Art appears only when its best card option beats the next option by this much, just like
+          click-to-identify. Raise it if the wrong art ever appears.
         </p>
         <CorrectionPreference upload={corrections} />
         <p className="mt-3 break-words text-[0.65rem] text-base-content/60">

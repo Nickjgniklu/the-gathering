@@ -3,6 +3,7 @@ import { useState } from "react"
 import { GameChangerBadge } from "@/components/game-changer-badge"
 import { cn } from "@/lib/cn"
 import { usePrintingDetails } from "./card-details"
+import type { SuperAiOverlayCard } from "./super-ai-overlay"
 import type { BoardCard, IdentifiedCard, TableParticipant } from "./use-webcam-room"
 
 /** Small card image for one printing, loaded from Scryfall through the server; a grey card
@@ -60,10 +61,19 @@ export function CardThumb({
   )
 }
 
+function SuperAiCardThumb({ card }: { card: SuperAiOverlayCard }) {
+  const details = usePrintingDetails(card.id)
+  return (
+    <CardThumb card={{ id: card.id, name: details.data?.name ?? "Recognized card", set: "" }} />
+  )
+}
+
 interface TrayProps {
   participant: TableParticipant
   /** Every identified card at the table; only this board's entries are shown. */
   cards: BoardCard[]
+  /** Current automatic scan results for this board. They are never added to `cards`. */
+  superAiCards?: SuperAiOverlayCard[]
   onPreview: (entry: BoardCard) => void
   onRemove: (id: string) => void
   /** Present only for the local seat: clearing a whole board is the owner's call. */
@@ -74,12 +84,13 @@ interface TrayProps {
 }
 
 /** Convoke-style tray docked to the bottom of the active board: a chevron tab that unfolds a
- * translucent shelf of the cards identified on this board, newest last. Nothing here is a
- * game event: it is the table's shared, ephemeral notion of what is on that board, and a
- * wrong entry can be removed by any seat. Rulings live in the card preview, not here. */
+ * translucent shelf with click history or the current Super AI result. Only click history is a
+ * shared, ephemeral notion of what is on that board; scan results are local and never recorded.
+ * A wrong history entry can be removed by any seat. Rulings live in the card preview, not here. */
 export function BoardCardTray({
   participant,
   cards,
+  superAiCards,
   onPreview,
   onRemove,
   onClear,
@@ -87,7 +98,9 @@ export function BoardCardTray({
   onExpandedChange,
 }: TrayProps) {
   const [expanded, setExpanded] = useState(defaultExpanded)
+  const [mode, setMode] = useState<"history" | "scan">("history")
   const mine = cards.filter((entry) => entry.ownerPeerId === participant.peer_id)
+  const scanCards = mode === "scan" ? superAiCards : undefined
   const Chevron = expanded ? ChevronDown : ChevronUp
 
   return (
@@ -118,41 +131,91 @@ export function BoardCardTray({
           id={`tray-${participant.peer_id}`}
           className="w-full border-t border-white/15 bg-black/70 px-3 py-2 backdrop-blur"
         >
-          {onClear && mine.length > 0 && (
-            <div className="flex justify-end">
+          {superAiCards !== undefined && (
+            <div
+              className="mb-2 flex justify-center gap-1"
+              role="tablist"
+              aria-label="Card tray mode"
+            >
               <button
                 type="button"
-                className="btn btn-ghost btn-xs gap-1 text-[0.65rem] text-white/75 hover:text-error"
-                onClick={onClear}
+                role="tab"
+                aria-selected={scanCards === undefined}
+                className={cn(
+                  "btn btn-xs",
+                  scanCards === undefined ? "btn-primary" : "btn-ghost text-white/75",
+                )}
+                onClick={() => setMode("history")}
               >
-                <Eraser className="size-3" /> Clear cards
+                Click history
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={scanCards !== undefined}
+                className={cn(
+                  "btn btn-xs",
+                  scanCards !== undefined ? "btn-primary" : "btn-ghost text-white/75",
+                )}
+                onClick={() => setMode("scan")}
+              >
+                Super AI now
               </button>
             </div>
           )}
-          {mine.length === 0 ? (
-            <p className="py-2 text-center text-xs text-white/60">
-              No cards identified on this board yet. Click a card on the video to identify it.
-            </p>
+          {scanCards !== undefined ? (
+            scanCards.length === 0 ? (
+              <p className="py-2 text-center text-xs text-white/60">
+                No clear Super AI matches right now.
+              </p>
+            ) : (
+              <ul className="flex gap-2 overflow-x-auto pt-1.5" aria-label="Current Super AI cards">
+                {scanCards.map((card, index) => (
+                  <li key={`${card.id}-${index}`} className="w-16 shrink-0 md:w-20">
+                    <SuperAiCardThumb card={card} />
+                  </li>
+                ))}
+              </ul>
+            )
           ) : (
-            <ul className="flex gap-2 overflow-x-auto pt-1.5" aria-label="Identified cards">
-              {mine.map((entry) => (
-                <li key={entry.id} className="relative w-16 shrink-0 md:w-20">
-                  <CardThumb
-                    card={entry.card}
-                    onClick={() => onPreview(entry)}
-                    className="w-full"
-                  />
+            <>
+              {onClear && mine.length > 0 && (
+                <div className="flex justify-end">
                   <button
                     type="button"
-                    className="absolute -top-1.5 -right-1.5 grid size-5 place-items-center rounded-full bg-error text-white shadow ring-2 ring-black/60 hover:brightness-110"
-                    onClick={() => onRemove(entry.id)}
-                    aria-label={`Remove ${entry.card.name}`}
+                    className="btn btn-ghost btn-xs gap-1 text-[0.65rem] text-white/75 hover:text-error"
+                    onClick={onClear}
                   >
-                    <X className="size-3" strokeWidth={3} />
+                    <Eraser className="size-3" /> Clear cards
                   </button>
-                </li>
-              ))}
-            </ul>
+                </div>
+              )}
+              {mine.length === 0 ? (
+                <p className="py-2 text-center text-xs text-white/60">
+                  No cards identified on this board yet. Click a card on the video to identify it.
+                </p>
+              ) : (
+                <ul className="flex gap-2 overflow-x-auto pt-1.5" aria-label="Identified cards">
+                  {mine.map((entry) => (
+                    <li key={entry.id} className="relative w-16 shrink-0 md:w-20">
+                      <CardThumb
+                        card={entry.card}
+                        onClick={() => onPreview(entry)}
+                        className="w-full"
+                      />
+                      <button
+                        type="button"
+                        className="absolute -top-1.5 -right-1.5 grid size-5 place-items-center rounded-full bg-error text-white shadow ring-2 ring-black/60 hover:brightness-110"
+                        onClick={() => onRemove(entry.id)}
+                        aria-label={`Remove ${entry.card.name}`}
+                      >
+                        <X className="size-3" strokeWidth={3} />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
           )}
         </div>
       )}

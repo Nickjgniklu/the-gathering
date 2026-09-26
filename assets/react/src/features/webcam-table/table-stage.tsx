@@ -83,24 +83,31 @@ function StageBoard({
           source={superAiCards.source}
           flip={videoFlip(view, participant)}
         />
-        {participant.peer_id === view.activeGroup[0]?.peer_id &&
-          participant.peer_id !== view.localParticipant.peer_id && (
-            <Button
-              type="button"
-              variant={superAiEnabled ? "default" : "secondary"}
-              size="sm"
-              className="absolute top-3 right-3 z-10 shadow-lg"
-              aria-pressed={superAiEnabled}
-              aria-label={`${superAiEnabled ? "Turn off" : "Turn on"} Super AI`}
-              onClick={onToggleSuperAi}
-            >
-              <Sparkles className="size-4" aria-hidden="true" />
-              Super AI {superAiEnabled ? "on" : "off"}
-            </Button>
-          )}
+        {participant.peer_id === view.activeGroup[0]?.peer_id && (
+          <Button
+            type="button"
+            variant={superAiEnabled ? "default" : "secondary"}
+            size="sm"
+            className={cn(
+              "absolute right-3 z-10 shadow-lg",
+              isPinned(view, participant) ? "top-12" : "top-3",
+            )}
+            aria-pressed={superAiEnabled}
+            aria-label={`${superAiEnabled ? "Turn off" : "Turn on"} Super AI`}
+            onClick={onToggleSuperAi}
+          >
+            <Sparkles className="size-4" aria-hidden="true" />
+            Super AI {superAiEnabled ? "on" : "off"}
+          </Button>
+        )}
         <BoardCardTray
           participant={participant}
           cards={room.identifiedCards}
+          superAiCards={
+            superAiEnabled && participant.peer_id === view.activeGroup[0]?.peer_id
+              ? superAiCards.cards
+              : undefined
+          }
           onPreview={flow.previewEntry}
           onRemove={room.removeCard}
           onClear={

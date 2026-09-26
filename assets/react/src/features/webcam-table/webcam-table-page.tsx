@@ -129,26 +129,27 @@ function LiveRoom({ roomId, playerId, playerName, decks }: LiveRoomProps) {
       const image = await decodeJpeg(new Blob([frame.bytes.buffer], { type: "image/jpeg" }))
       const result = await flow.recognizer.identifyFrame(
         image,
-        undefined,
+        { minMatchConfidence: 0 },
         AbortSignal.timeout(10_000),
       )
+      const scanned = overlayCardsFromScan(result, preferences.superAiMargin)
       setSuperAiCards((previous) => ({
         cards:
           previous.source?.width === frame.width && previous.source.height === frame.height
-            ? stabilizeSuperAiCards(previous.cards, overlayCardsFromScan(result))
-            : overlayCardsFromScan(result),
+            ? stabilizeSuperAiCards(previous.cards, scanned)
+            : scanned,
         source: { width: frame.width, height: frame.height },
       }))
     }
     return () => {
       superAiFrameHandler.current = async () => {}
     }
-  }, [flow.recognizer.identifyFrame])
+  }, [flow.recognizer.identifyFrame, preferences.superAiMargin])
   const superAiTarget = view.activeGroup[0]?.peer_id
   const { request: requestSuperAi, cancel: cancelSuperAi } = room.superAi
   useEffect(() => {
     setSuperAiCards({ cards: [], source: null })
-    if (!preferences.superAi || !superAiTarget || superAiTarget === room.peerId) {
+    if (!preferences.superAi || !superAiTarget) {
       cancelSuperAi()
       return
     }
@@ -165,7 +166,7 @@ function LiveRoom({ roomId, playerId, playerName, decks }: LiveRoomProps) {
       if (timer) window.clearTimeout(timer)
       cancelSuperAi()
     }
-  }, [cancelSuperAi, preferences.superAi, requestSuperAi, room.peerId, superAiTarget])
+  }, [cancelSuperAi, preferences.superAi, requestSuperAi, superAiTarget])
   useRoomHotkeys(view, flow, {
     togglePanel: () => setPanelOpen((open) => !open),
     showTab: (tab) => {

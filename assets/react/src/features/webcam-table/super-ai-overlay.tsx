@@ -1,6 +1,7 @@
 import { useQueries } from "@tanstack/react-query"
 import { useLayoutEffect, useRef, useState } from "react"
 import { getPrintingDetails } from "./card-details"
+import { CLEAR_MARGIN, isClear } from "./card-suggestions"
 import type { FullFrameIdentification, TableCard } from "./recognition/messages"
 import type { Quad } from "./recognition/pipeline"
 
@@ -9,11 +10,20 @@ export interface SuperAiOverlayCard {
   quad: Quad
 }
 
-/** Only replace a card with gallery art when the match is reliable enough not to mislead a viewer. */
-export function overlayCardsFromScan(result: FullFrameIdentification): SuperAiOverlayCard[] {
+/** The same top-two lead click-to-identify requires before selecting a card automatically. */
+export const SUPER_AI_MARGIN_DEFAULT = CLEAR_MARGIN
+export const SUPER_AI_MARGIN_MIN = 0.02
+export const SUPER_AI_MARGIN_MAX = 0.2
+
+/** Only replace a card with gallery art when its best candidate clearly beats the runner-up,
+ * matching click-to-identify's automatic-selection rule. */
+export function overlayCardsFromScan(
+  result: FullFrameIdentification,
+  minMargin: number = SUPER_AI_MARGIN_DEFAULT,
+): SuperAiOverlayCard[] {
   return result.cards.flatMap((card) => {
     const top = card.candidates[0]
-    return top && top.score >= 0.8 ? [{ id: top.id, quad: card.quad }] : []
+    return top && isClear(card.candidates, minMargin) ? [{ id: top.id, quad: card.quad }] : []
   })
 }
 
@@ -49,11 +59,18 @@ export function stabilizeSuperAiCards(
   return next.map((card) => {
     const cardCenter = center(card.quad)
     const matchingIndex = [...available]
-      .filter((index) => previous[index]?.id === card.id && containsWithMargin(previous[index].quad, cardCenter))
+      .filter(
+        (index) =>
+          previous[index]?.id === card.id && containsWithMargin(previous[index].quad, cardCenter),
+      )
       .sort((left, right) => {
         const [leftX, leftY] = center(previous[left].quad)
         const [rightX, rightY] = center(previous[right].quad)
-        return (leftX - cardCenter[0]) ** 2 + (leftY - cardCenter[1]) ** 2 - ((rightX - cardCenter[0]) ** 2 + (rightY - cardCenter[1]) ** 2)
+        return (
+          (leftX - cardCenter[0]) ** 2 +
+          (leftY - cardCenter[1]) ** 2 -
+          ((rightX - cardCenter[0]) ** 2 + (rightY - cardCenter[1]) ** 2)
+        )
       })[0]
     if (matchingIndex === undefined) return card
     available.delete(matchingIndex)
@@ -69,12 +86,7 @@ export interface Size {
 export type ViewerFlip = { horizontal: boolean; vertical: boolean }
 
 /** Maps native camera pixels onto a stage's `object-contain` video, then mirrors for the viewer. */
-export function mapSourceQuad(
-  quad: Quad,
-  source: Size,
-  stage: Size,
-  flip: ViewerFlip,
-): Quad {
+export function mapSourceQuad(quad: Quad, source: Size, stage: Size, flip: ViewerFlip): Quad {
   const scale = Math.min(stage.width / source.width, stage.height / source.height)
   const width = source.width * scale
   const height = source.height * scale
@@ -158,7 +170,11 @@ export function SuperAiOverlay({
   if (!source || !stage.width || !stage.height)
     return <div ref={root} className="pointer-events-none absolute inset-0" />
   return (
-    <div ref={root} className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
+    <div
+      ref={root}
+      className="pointer-events-none absolute inset-0 overflow-hidden"
+      aria-hidden="true"
+    >
       {cards.map((card, index) => {
         const transform = quadTransform(mapSourceQuad(card.quad, source, stage, flip))
         const src = details[index]?.data?.image_uris.normal
@@ -197,7 +213,10 @@ export function TableDetectionOverlay({
       aria-label={`${cards.length} card${cards.length === 1 ? "" : "s"} detected on the table`}
       className="pointer-events-none absolute inset-0 overflow-hidden"
     >
-      <svg className="absolute inset-0 h-full w-full" viewBox={`0 0 ${stage.width} ${stage.height}`}>
+      <svg
+        className="absolute inset-0 h-full w-full"
+        viewBox={`0 0 ${stage.width} ${stage.height}`}
+      >
         {cards.map((card, index) => {
           const quad = mapSourceQuad(card.quad, source, stage, flip)
           return (
