@@ -580,7 +580,7 @@ render every participant in the shared order.
 The recognizer ships as a **bundle** exported and published from `ml/` (`cardid.export`,
 `cardid.publish`; see `ml/README.md`, "Shipping"). Phoenix serves whatever
 `DATA_DIR/cardid/current` points at. The image includes the
-`2026-09-26-table-a-pretrained-ep9` beta `table_detector.onnx` bundle so a fresh installation can
+`2026-09-26-table-a-pretrained-gpu-final` beta `table_detector.onnx` bundle so a fresh installation can
 use Super AI location overlays immediately; startup seeds it only when no `current` bundle exists.
 An administrator-published bundle remains authoritative and is never overwritten. New recognition
 or gallery bundles are still a `publish` away, and browsers pick them up on their next table
