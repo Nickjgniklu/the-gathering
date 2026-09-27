@@ -18,7 +18,15 @@ export function CardThumb({
   onClick?: () => void
 }) {
   const details = usePrintingDetails(card.id)
-  return <CardThumbView card={card} details={details.data} pending={details.isPending} className={className} onClick={onClick} />
+  return (
+    <CardThumbView
+      card={card}
+      details={details.data}
+      pending={details.isPending}
+      className={className}
+      onClick={onClick}
+    />
+  )
 }
 
 function CardThumbView({
@@ -79,7 +87,13 @@ function CardThumbView({
 
 function SuperAiCardThumb({ card }: { card: SuperAiOverlayCard }) {
   const details = usePrintingDetails(card.id)
-  return <CardThumbView card={{ id: card.id, name: details.data?.name ?? "Recognized card", set: "" }} details={details.data} pending={details.isPending} />
+  return (
+    <CardThumbView
+      card={{ id: card.id, name: details.data?.name ?? "Recognized card", set: "" }}
+      details={details.data}
+      pending={details.isPending}
+    />
+  )
 }
 
 interface TrayProps {

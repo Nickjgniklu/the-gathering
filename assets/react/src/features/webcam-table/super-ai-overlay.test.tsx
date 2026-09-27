@@ -2,10 +2,7 @@ import { expect, it } from "vite-plus/test"
 import { render, screen } from "@testing-library/react"
 import type { FullFrameIdentification, Identification } from "./recognition/messages"
 import type { Candidate, Quad } from "./recognition/pipeline"
-import {
-  overlayCardsFromScan,
-  stabilizeSuperAiCards,
-} from "./super-ai"
+import { overlayCardsFromScan, stabilizeSuperAiCards } from "./super-ai"
 import { mapSourceQuad, quadTransform, SuperAiArt } from "./super-ai-overlay"
 
 const quad = [

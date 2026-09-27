@@ -63,7 +63,10 @@ function SuperAiOutline({ quad, name }: { quad: Quad; name: string }) {
     quad[0],
   )
   return (
-    <svg className="pointer-events-none absolute inset-0 h-full w-full text-primary" aria-hidden="true">
+    <svg
+      className="pointer-events-none absolute inset-0 h-full w-full text-primary"
+      aria-hidden="true"
+    >
       <polygon
         points={quad.map(([x, y]) => `${x},${y}`).join(" ")}
         fill="rgba(0, 0, 0, 0.12)"

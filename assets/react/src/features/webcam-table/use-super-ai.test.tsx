@@ -85,7 +85,12 @@ it("reassembles out-of-order chunks, tolerates exact duplicates, and validates S
   transport.message({ type: "super_ai_frame_chunk", requestId: "request", index: 0, data: "AQID" })
   transport.message({ type: "super_ai_frame_end", requestId: "request" })
   await waitFor(() =>
-    expect(transport.onFrame).toHaveBeenCalledWith({ peerId: "owner", bytes: data, width: 2, height: 3 }),
+    expect(transport.onFrame).toHaveBeenCalledWith({
+      peerId: "owner",
+      bytes: data,
+      width: 2,
+      height: 3,
+    }),
   )
 
   const endBeforeChunk = harness()
@@ -101,7 +106,12 @@ it("reassembles out-of-order chunks, tolerates exact duplicates, and validates S
     private: false,
   })
   endBeforeChunk.message({ type: "super_ai_frame_end", requestId: "request" })
-  endBeforeChunk.message({ type: "super_ai_frame_chunk", requestId: "request", index: 0, data: "AQID" })
+  endBeforeChunk.message({
+    type: "super_ai_frame_chunk",
+    requestId: "request",
+    index: 0,
+    data: "AQID",
+  })
   await waitFor(() =>
     expect(endBeforeChunk.onFrame).toHaveBeenCalledWith({
       peerId: "owner",

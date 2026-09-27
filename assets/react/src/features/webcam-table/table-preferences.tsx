@@ -1,11 +1,7 @@
 import { useLayoutEffect, useRef, useState } from "react"
 import type { FlipAxis } from "./board"
 import { isPublisherQuality, type PublisherQuality } from "./media-policy"
-import {
-  SUPER_AI_MARGIN_DEFAULT,
-  SUPER_AI_MARGIN_MAX,
-  SUPER_AI_MARGIN_MIN,
-} from "./super-ai"
+import { SUPER_AI_MARGIN_DEFAULT, SUPER_AI_MARGIN_MAX, SUPER_AI_MARGIN_MIN } from "./super-ai"
 
 /** The camera rail's real limit is dynamic (see `useCameraRailWidth`); its `max` only bounds saved values. */
 export const RAIL_WIDTHS = {
