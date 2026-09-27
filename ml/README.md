@@ -935,6 +935,36 @@ the remaining false positives concentrate in the same 3 captures (`001`, `002`, 
 already the noisiest going in. Exported and pushed as `table-a-realclutter-v5`, the current
 shipped checkpoint.
 
+### Tiled inference: a free win for small/distant cards, no retraining
+
+A standing theory worth testing directly: does downsampling a whole table into one `TABLE_INPUT`
+pass cost recall on small cards, separately from anything the model has or hasn't learned?
+`tiled_inference.py` splits a frame into a grid of overlapping tiles (each covering a fraction of
+the frame, so each needs far less downsampling per card), runs the existing checkpoint on every
+tile plus the whole frame, and deduplicates by IoU -- an inference-time-only change, no retraining.
+
+Tested in two regimes against `table-a-realclutter-v5`, same checkpoint both times:
+
+- **Genuinely out-of-distribution tiny cards** (`short_frac` 0.02-0.04, well below anything any
+  camera profile has ever covered): single-pass recall **collapses to 13.0%**; a plain 2x2 tiled
+  pass alone reaches **84.7%** recall, 94.1% precision. This confirms the theory directly --
+  downsampling, not the model's learned features, is the bottleneck for cards this small.
+- **The 108-card real-capture golden dataset** (a realistic mix of card sizes, most already
+  comfortably sized): a plain tiled-only pass is *worse* than single-pass (74.1% vs. 88.9%
+  recall) -- tiling over-zooms already-well-sized cards past the range any camera profile trained
+  for, costing more than the small-card win recovers.
+
+`detect_multiscale` (whole-frame pass + tiled passes, deduplicated together) gets both: **90.7%
+recall / 87.5% precision on the golden dataset (strictly >= single-pass on every one of the 12
+captures, never worse)**, while keeping nearly all of the tiny-card win (84.0% recall, up from
+13.0%). Free correctness at the cost of ~(rows x cols + 1) forward passes instead of 1 -- cheap on
+a modern GPU/NPU, worth confirming on-device before adopting for the deployed frontend pipeline,
+which does not yet use this.
+
+```sh
+uv run python -m cardid.tiled_inference compare --checkpoint data/runs/<run>/best.pt --rows 2 --cols 2
+```
+
 ### Exporting the dense detector for the rest of the app
 
 `export_table_detector.py` exports a `TableCenterNet` checkpoint to a standalone ONNX artifact,
