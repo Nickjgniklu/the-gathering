@@ -85,7 +85,30 @@ it("reassembles out-of-order chunks, tolerates exact duplicates, and validates S
   transport.message({ type: "super_ai_frame_chunk", requestId: "request", index: 0, data: "AQID" })
   transport.message({ type: "super_ai_frame_end", requestId: "request" })
   await waitFor(() =>
-    expect(transport.onFrame).toHaveBeenCalledWith({ bytes: data, width: 2, height: 3 }),
+    expect(transport.onFrame).toHaveBeenCalledWith({ peerId: "owner", bytes: data, width: 2, height: 3 }),
+  )
+
+  const endBeforeChunk = harness()
+  act(() => expect(endBeforeChunk.hook.result.current.request("owner")).toBe(true))
+  endBeforeChunk.message({
+    type: "super_ai_frame_start",
+    requestId: "request",
+    width: 2,
+    height: 3,
+    bytes: 3,
+    chunks: 1,
+    digest: await sha256(new Uint8Array([1, 2, 3])),
+    private: false,
+  })
+  endBeforeChunk.message({ type: "super_ai_frame_end", requestId: "request" })
+  endBeforeChunk.message({ type: "super_ai_frame_chunk", requestId: "request", index: 0, data: "AQID" })
+  await waitFor(() =>
+    expect(endBeforeChunk.onFrame).toHaveBeenCalledWith({
+      peerId: "owner",
+      bytes: new Uint8Array([1, 2, 3]),
+      width: 2,
+      height: 3,
+    }),
   )
 
   const bad = harness()
@@ -191,6 +214,7 @@ it("scans the local board without sending a frame through WebRTC", async () => {
   expect(local.hook.result.current.request("viewer")).toBe(true)
   await waitFor(() =>
     expect(local.onFrame).toHaveBeenCalledWith({
+      peerId: "viewer",
       bytes: new Uint8Array([1, 2, 3]),
       width: 2,
       height: 2,

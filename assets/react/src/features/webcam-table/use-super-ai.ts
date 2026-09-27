@@ -10,14 +10,15 @@ import type { RoomLink } from "./room-link"
 import type { LocalCamera } from "./use-local-camera"
 import type { PeerConnections } from "./use-peer-connections"
 
-export const SUPER_AI_SCAN_INTERVAL_MS = 10_000
-export const SUPER_AI_TIMEOUT_MS = 12_000
+export const SUPER_AI_SCAN_INTERVAL_MS = 30_000
+export const SUPER_AI_TIMEOUT_MS = 32_000
 
 interface Incoming {
   fromPeerId: string
   start: SuperAiFrameStart
   chunks: Map<number, string>
   receivedBytes: number
+  ended: boolean
   timeout: number
 }
 
@@ -42,7 +43,12 @@ export function useSuperAi(
   link: RoomLink,
   { frame, videoEnabled }: Pick<LocalCamera, "frame" | "videoEnabled">,
   { send, listen, revealTarget }: Pick<PeerConnections, "send" | "listen" | "revealTarget">,
-  onFrame: (frame: { bytes: Uint8Array; width: number; height: number }) => Promise<void>,
+  onFrame: (frame: {
+    peerId: string
+    bytes: Uint8Array
+    width: number
+    height: number
+  }) => Promise<void>,
 ) {
   const incomingRef = useRef<Incoming | null>(null)
   const pendingRef = useRef<{ target: string; requestId: string; timeout: number } | null>(null)
@@ -143,7 +149,12 @@ export function useSuperAi(
         return
       setStatus("scanning")
       try {
-        await onFrame({ bytes: data, width: incoming.start.width, height: incoming.start.height })
+        await onFrame({
+          peerId: fromPeerId,
+          bytes: data,
+          width: incoming.start.width,
+          height: incoming.start.height,
+        })
         setLastCompleted(Date.now())
         setStatus("idle")
       } catch {
@@ -176,6 +187,7 @@ export function useSuperAi(
           start: message,
           chunks: new Map(),
           receivedBytes: 0,
+          ended: false,
           timeout: window.setTimeout(clearIncoming, SUPER_AI_TIMEOUT_MS),
         }
       } else if (message.type === "super_ai_frame_chunk") {
@@ -201,7 +213,13 @@ export function useSuperAi(
           return clearIncoming()
         incoming.chunks.set(message.index, message.data)
         incoming.receivedBytes += chunkBytes.byteLength
+        if (incoming.ended && incoming.chunks.size === incoming.start.chunks)
+          void finish(fromPeerId)
       } else if (message.type === "super_ai_frame_end") {
+        const incoming = incomingRef.current
+        if (incoming?.fromPeerId !== fromPeerId || incoming.start.requestId !== message.requestId)
+          return
+        incoming.ended = true
         void finish(fromPeerId)
       }
     },
@@ -244,7 +262,7 @@ export function useSuperAi(
         lastRequestRef.current.set(target, now)
         setStatus("scanning")
         const data = bytes(captured.image.slice(captured.image.indexOf(",") + 1))
-        onFrame({ bytes: data, width: captured.width, height: captured.height })
+        onFrame({ peerId: target, bytes: data, width: captured.width, height: captured.height })
           .then(() => {
             setLastCompleted(Date.now())
             setStatus("idle")

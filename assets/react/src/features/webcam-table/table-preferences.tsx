@@ -5,7 +5,7 @@ import {
   SUPER_AI_MARGIN_DEFAULT,
   SUPER_AI_MARGIN_MAX,
   SUPER_AI_MARGIN_MIN,
-} from "./super-ai-overlay"
+} from "./super-ai"
 
 /** The camera rail's real limit is dynamic (see `useCameraRailWidth`); its `max` only bounds saved values. */
 export const RAIL_WIDTHS = {

@@ -24,11 +24,8 @@ import { useSeatDecklists } from "./seat-decklists"
 import { useTurnSound } from "./use-turn-sound"
 import { useVideoStats } from "./video-stats"
 import { useWebcamRoom } from "./use-webcam-room"
-import {
-  overlayCardsFromScan,
-  stabilizeSuperAiCards,
-  type SuperAiOverlayCard,
-} from "./super-ai-overlay"
+import { SUPER_AI_SCAN_INTERVAL_MS } from "./use-super-ai"
+import { overlayCardsFromScan, stabilizeSuperAiCards, type SuperAiOverlayCard } from "./super-ai"
 
 interface Props {
   roomId: string
@@ -74,8 +71,10 @@ function TableEndedRedirect() {
 function LiveRoom({ roomId, playerId, playerName, decks }: LiveRoomProps) {
   const preferences = useTablePreferences(playerId)
   const superAiFrameHandler = useRef<
-    (frame: { bytes: Uint8Array; width: number; height: number }) => Promise<void>
+    (frame: { peerId: string; bytes: Uint8Array; width: number; height: number }) => Promise<void>
   >(async () => {})
+  const superAiAbortRef = useRef<AbortController | null>(null)
+  const superAiTargetRef = useRef<string | null>(null)
   const [superAiCards, setSuperAiCards] = useState<{
     cards: SuperAiOverlayCard[]
     source: { width: number; height: number } | null
@@ -124,14 +123,19 @@ function LiveRoom({ roomId, playerId, playerName, decks }: LiveRoomProps) {
     corrections,
     blocked: dialog?.kind === "help" || dialog?.kind === "finish",
   })
+  const superAiTarget = view.activeGroup[0]?.peer_id
   useEffect(() => {
     superAiFrameHandler.current = async (frame) => {
+      const controller = superAiAbortRef.current
+      if (!controller || controller.signal.aborted || superAiTargetRef.current !== frame.peerId)
+        return
       const image = await decodeJpeg(new Blob([frame.bytes.buffer], { type: "image/jpeg" }))
       const result = await flow.recognizer.identifyFrame(
         image,
         { minMatchConfidence: 0 },
-        AbortSignal.timeout(10_000),
+        AbortSignal.any([controller.signal, AbortSignal.timeout(SUPER_AI_SCAN_INTERVAL_MS)]),
       )
+      if (controller.signal.aborted || superAiTargetRef.current !== frame.peerId) return
       const scanned = overlayCardsFromScan(result, preferences.superAiMargin)
       setSuperAiCards((previous) => ({
         cards:
@@ -145,28 +149,40 @@ function LiveRoom({ roomId, playerId, playerName, decks }: LiveRoomProps) {
       superAiFrameHandler.current = async () => {}
     }
   }, [flow.recognizer.identifyFrame, preferences.superAiMargin])
-  const superAiTarget = view.activeGroup[0]?.peer_id
   const { request: requestSuperAi, cancel: cancelSuperAi } = room.superAi
+  const requestSuperAiRef = useRef(requestSuperAi)
+  const cancelSuperAiRef = useRef(cancelSuperAi)
+  requestSuperAiRef.current = requestSuperAi
+  cancelSuperAiRef.current = cancelSuperAi
   useEffect(() => {
+    superAiAbortRef.current?.abort()
     setSuperAiCards({ cards: [], source: null })
     if (!preferences.superAi || !superAiTarget) {
-      cancelSuperAi()
+      superAiAbortRef.current = null
+      superAiTargetRef.current = null
+      cancelSuperAiRef.current()
       return
     }
+    const controller = new AbortController()
+    superAiAbortRef.current = controller
+    superAiTargetRef.current = superAiTarget
     let cancelled = false
     let timer: number | undefined
     const scan = () => {
       if (cancelled) return
-      requestSuperAi(superAiTarget)
-      timer = window.setTimeout(scan, 10_000)
+      requestSuperAiRef.current(superAiTarget)
+      timer = window.setTimeout(scan, SUPER_AI_SCAN_INTERVAL_MS)
     }
     scan()
     return () => {
       cancelled = true
+      controller.abort()
+      if (superAiAbortRef.current === controller) superAiAbortRef.current = null
+      if (superAiTargetRef.current === superAiTarget) superAiTargetRef.current = null
       if (timer) window.clearTimeout(timer)
-      cancelSuperAi()
+      cancelSuperAiRef.current()
     }
-  }, [cancelSuperAi, preferences.superAi, requestSuperAi, superAiTarget])
+  }, [preferences.superAi, superAiTarget])
   useRoomHotkeys(view, flow, {
     togglePanel: () => setPanelOpen((open) => !open),
     showTab: (tab) => {

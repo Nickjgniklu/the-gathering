@@ -524,22 +524,18 @@ can still save or share what they saw; this feature cannot revoke frames already
   View decklist**. `features/decks/decklist-cards.ts` holds the `GET /api/decks/:id/decklist`
   query and deck-builder grouping.
 - `features/webcam-table/recognition/` — `use-recognizer.ts` (hook owning the worker and its
-  checking/loading/ready/unavailable/failed state; also exposes `identifyFrame` and
-  `detectTable`), `recognizer.worker.ts` (ONNX Runtime Web sessions, warm-up, identify, full-frame
-  scan and table detection — each graph loads independently, so a bundle missing the embedding
-  pipeline still serves the table detector), `pipeline.ts` (pure port of `ml/cardid/bundle.py`
-  plus the table detector's letterbox/unletterbox math; unit-tested in `pipeline.test.ts`), and
-  `messages.ts` (worker protocol types, including `TableDetection`).
+  checking/loading/ready/unavailable/failed state; also exposes `identifyFrame`),
+  `recognizer.worker.ts` (ONNX Runtime Web sessions, warm-up, identify and full-frame scan),
+  `pipeline.ts` (pure port of `ml/cardid/bundle.py`, unit-tested in `pipeline.test.ts`), and
+  `messages.ts` (worker protocol types).
 - `TheGathering.CardId` + `CardIdBundleController` serve the published bundle from
   `DATA_DIR/cardid/current` (`GET /api/cardid/bundle` for the manifest and file URLs,
-  `GET /api/cardid/bundles/:version/:name` for the immutable files), advertising only the files a
-  given version actually ships. `404` on `bundle` means nothing is published at all and the UI
-  falls back to deck suggestions for clicks; Super AI scanning simply has nothing to detect with.
+  `GET /api/cardid/bundles/:version/:name` for the immutable files). `404` on `bundle` means no
+  recognition bundle is published and the UI falls back to deck suggestions.
 - `features/webcam-table/use-super-ai.ts` + `data-messages.ts` — the Super AI frame
   request/chunk/end protocol described above, validated the same way as the click-crop RPC.
-- `features/webcam-table/super-ai-overlay.tsx` — `TableDetectionOverlay` (box + confidence,
-  live today) and `SuperAiOverlay`/`overlayCardsFromScan` (art crops per identified card, ready
-  for the embedding model), sharing `mapSourceQuad`'s stage-mapping math.
+- `features/webcam-table/super-ai.ts` — scan-result selection and stabilization; `super-ai-overlay.tsx`
+  renders the corresponding art crops with `mapSourceQuad`'s stage-mapping math.
 - `features/webcam-table/side-panel.tsx` — icon strip and Table/Decks/Cards/Log tabs
   (`cards-tab.tsx` holds the Cards tab; `panel-section.tsx` the collapsible section).
 - `features/webcam-table/finish-game.tsx` — the End game dialog: record the result or end without
@@ -579,11 +575,9 @@ render every participant in the shared order.
 
 The recognizer ships as a **bundle** exported and published from `ml/` (`cardid.export`,
 `cardid.publish`; see `ml/README.md`, "Shipping"). Phoenix serves whatever
-`DATA_DIR/cardid/current` points at. The image includes the
-`2026-09-26-table-a-pretrained-gpu-final` beta `table_detector.onnx` bundle so a fresh installation can
-use Super AI location overlays immediately; startup seeds it only when no `current` bundle exists.
-An administrator-published bundle remains authoritative and is never overwritten. New recognition
-or gallery bundles are still a `publish` away, and browsers pick them up on their next table
+`DATA_DIR/cardid/current` points at. Model bundles are neither committed to this repository nor
+baked into the container image, so a new recognition or gallery bundle is a `publish` away and
+browsers pick it up on their next table
 because they cache bundle files by version.
 
 Gallery coverage includes paper artwork in any language (including Japanese-only alternate
@@ -662,8 +656,8 @@ hover images, rulings and correction labels. Name-based board deduplication is u
 ### Super AI board scan
 
 A second, independent recognition path alongside click-to-identify: instead of naming one card
-a player clicked, it periodically scans a whole board and outlines every card the table detector
-finds. It is opt-in (Settings → Card scan → **Super AI board scan**, off by default) and, like
+a player clicked, it periodically identifies the visible board. It is opt-in (Settings → Card scan
+→ **Super AI board scan**, off by default) and, like
 clicks, runs entirely in the two browsers — the server only relays WebRTC signaling and never
 sees a frame.
 
@@ -680,27 +674,11 @@ step, so a reveal ending or a camera going off mid-transfer stops the frame goin
 used. `parseDataMessage` (shared with the older capture-crop RPC) rejects anything outside these
 shapes, sizes and ranges before it reaches application code.
 
-**Detection** (`recognition/pipeline.ts`, `recognizer.worker.ts`): the requester decodes the JPEG
-and calls `detectTable`, which letterboxes the frame to the 384×384 square `table_detector.onnx`
-expects (`letterboxToSquare` — scale to fit, pad with black, never stretch, since the model was
-trained only on square synthetic scenes) and runs one dense forward pass. The graph returns up
-to 40 quads and scores in one shot, already sorted; everything scoring at least
-`TABLE_DETECTOR_MIN_SCORE` (0.3) is mapped back to source-frame pixels
-(`unletterboxQuad`) and returned as a `TableDetection`. This finds *where* every card is, not
-*which* card it is — that needs an embedding/search model that does not exist yet, so
-`table_detector.onnx` can be (and today is) published on its own; `TheGathering.CardId` and
-`CardIdBundleController` treat every bundle file as independently optional and only advertise
-the ones actually present in a given version (`GET /api/cardid/bundle`'s `files` map), the same
-way the existing `printings.json` sibling file already worked.
-
-**Rendering** (`super-ai-overlay.tsx`): `TableDetectionOverlay` maps each box through the same
-`object-contain` letterbox math the stage's video uses (`mapSourceQuad`, shared with the
-art-overlay component below) and draws an outlined polygon plus a confidence percentage over the
-scanned board — no card art, since there is no identity yet. `overlayCardsFromScan` and
-`SuperAiOverlay` (art crops warped onto each box via a CSS `matrix3d` projective transform,
-`quadTransform`) are built and unit-tested against the same `FullFrameIdentification` shape
-`identifyFrame`'s grid/hybrid multi-card scan already produces, ready to switch on once an
-embedding model ships.
+**Recognition and rendering** (`recognizer.worker.ts`, `super-ai.ts`, `super-ai-overlay.tsx`):
+the requester decodes the JPEG and runs the published identity pipeline over the whole frame.
+Only a clear top match is retained; its Scryfall art is projectively warped onto the identified
+card through the same `object-contain` mapping used by the stage video. Results are scoped to the
+currently viewed board, so a completed scan cannot appear after the viewer switches boards.
 
 ### Linked deck lists
 

@@ -16,6 +16,9 @@ the_gathering-*.tar
 /priv/static/assets/
 /priv/static/cache_manifest.json
 
+# Card-recognition model bundles are built and published from ml/ to DATA_DIR/cardid.
+/priv/cardid/
+
 # Local SQLite databases and runtime data
 *.db
 *.db-*

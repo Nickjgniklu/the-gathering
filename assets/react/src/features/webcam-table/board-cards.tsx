@@ -2,8 +2,8 @@ import { ChevronDown, ChevronUp, Eraser, X } from "lucide-react"
 import { useState } from "react"
 import { GameChangerBadge } from "@/components/game-changer-badge"
 import { cn } from "@/lib/cn"
-import { usePrintingDetails } from "./card-details"
-import type { SuperAiOverlayCard } from "./super-ai-overlay"
+import { usePrintingDetails, type PrintingDetails } from "./card-details"
+import type { SuperAiOverlayCard } from "./super-ai"
 import type { BoardCard, IdentifiedCard, TableParticipant } from "./use-webcam-room"
 
 /** Small card image for one printing, loaded from Scryfall through the server; a grey card
@@ -18,7 +18,23 @@ export function CardThumb({
   onClick?: () => void
 }) {
   const details = usePrintingDetails(card.id)
-  const src = details.data?.image_uris.small ?? details.data?.image_uris.normal
+  return <CardThumbView card={card} details={details.data} pending={details.isPending} className={className} onClick={onClick} />
+}
+
+function CardThumbView({
+  card,
+  details,
+  pending,
+  className,
+  onClick,
+}: {
+  card: IdentifiedCard
+  details?: PrintingDetails
+  pending: boolean
+  className?: string
+  onClick?: () => void
+}) {
+  const src = details?.image_uris.small ?? details?.image_uris.normal
   const image = src ? (
     <img
       src={src}
@@ -31,7 +47,7 @@ export function CardThumb({
     <span
       className={cn(
         "grid aspect-[5/7] w-full place-items-center rounded-[4.5%] bg-white/10 p-1 text-center text-[0.55rem] leading-tight text-white/70",
-        details.isPending && "animate-pulse",
+        pending && "animate-pulse",
       )}
     >
       {card.name}
@@ -41,7 +57,7 @@ export function CardThumb({
     <>
       {image}
       <span className="absolute bottom-0.5 left-0.5">
-        <GameChangerBadge gameChanger={details.data?.game_changer} compact />
+        <GameChangerBadge gameChanger={details?.game_changer} compact />
       </span>
     </>
   )
@@ -63,9 +79,7 @@ export function CardThumb({
 
 function SuperAiCardThumb({ card }: { card: SuperAiOverlayCard }) {
   const details = usePrintingDetails(card.id)
-  return (
-    <CardThumb card={{ id: card.id, name: details.data?.name ?? "Recognized card", set: "" }} />
-  )
+  return <CardThumbView card={{ id: card.id, name: details.data?.name ?? "Recognized card", set: "" }} details={details.data} pending={details.isPending} />
 }
 
 interface TrayProps {

@@ -31,7 +31,12 @@ export function useWebcamRoom(
   deviceId = "",
   quality: PublisherQuality = "auto",
   cameraEnabled = true,
-  onSuperAiFrame?: (frame: { bytes: Uint8Array; width: number; height: number }) => Promise<void>,
+  onSuperAiFrame?: (frame: {
+    peerId: string
+    bytes: Uint8Array
+    width: number
+    height: number
+  }) => Promise<void>,
 ) {
   const link = useRoomLink()
   const [status, setStatus] = useState("Opening 1080p camera…")

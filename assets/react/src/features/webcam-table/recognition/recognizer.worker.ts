@@ -16,7 +16,6 @@ import type {
   FullFrameIdentification,
   FullFrameOptions,
   Identification,
-  TableDetection,
   WorkerRequest,
   WorkerResponse,
 } from "./messages"
@@ -26,11 +25,11 @@ import {
   refineSide,
   resampleWindow,
   searchArts,
-  unletterboxQuad,
-  upVote,
   TABLE_DETECTOR_INPUT,
   TABLE_DETECTOR_MAX_DETECTIONS,
   TABLE_DETECTOR_MIN_SCORE,
+  unletterboxQuad,
+  upVote,
   type BundleConstants,
   type Candidate,
   type GalleryArt,
@@ -113,14 +112,6 @@ async function load(bundle: BundleInfo) {
     }
     await identify(blank, size / 2, size / 2)
   }
-  if (tableDetector) {
-    const blank: RgbaImage = {
-      data: new Uint8ClampedArray(TABLE_DETECTOR_INPUT * TABLE_DETECTOR_INPUT * 4).fill(255),
-      width: TABLE_DETECTOR_INPUT,
-      height: TABLE_DETECTOR_INPUT,
-    }
-    await detectTable(blank)
-  }
   reply({
     type: "ready",
     version: bundle.version,
@@ -139,7 +130,7 @@ function requireIdentification(state: Loaded) {
   return { detector, embed, search, constants }
 }
 
-function requireTableDetector(state: Loaded): ort.InferenceSession {
+function requireTableDetector(state: Loaded) {
   if (!state.tableDetector) throw new Error("table detector unavailable")
   return state.tableDetector
 }
@@ -227,18 +218,37 @@ interface ScanProposal {
   confidence: number
 }
 
-function gridPoints(image: RgbaImage, scene: number): Point[] {
-  // Windows overlap by half their side, so a card on a cell edge remains near the middle of a
-  // neighbouring detector view. Include both bounds even when the frame is smaller than scene.
-  const step = Math.max(1, Math.floor(scene / 2))
-  const axis = (length: number) => {
-    const last = Math.max(0, length - 1)
-    const points: number[] = []
-    for (let point = 0; point <= last; point += step) points.push(point)
-    if (points.at(-1) !== last) points.push(last)
-    return points
+async function detectTable(image: RgbaImage): Promise<ScanProposal[]> {
+  if (!loaded) throw new Error("bundle not loaded")
+  const tableDetector = requireTableDetector(loaded)
+  const { input, transform } = letterboxToSquare(image, TABLE_DETECTOR_INPUT)
+  const out = await tableDetector.run({
+    table: new ort.Tensor("uint8", new Uint8Array(input.data.buffer), [
+      TABLE_DETECTOR_INPUT,
+      TABLE_DETECTOR_INPUT,
+      4,
+    ]),
+  })
+  const quads = out.quads?.data as Float32Array
+  const scores = out.scores?.data as Float32Array
+  const proposals: ScanProposal[] = []
+  for (let i = 0; i < TABLE_DETECTOR_MAX_DETECTIONS; i += 1) {
+    const confidence = scores[i] ?? 0
+    if (confidence < TABLE_DETECTOR_MIN_SCORE) break
+    const quad = unletterboxQuad(
+      [0, 1, 2, 3].map((corner) => [
+        quads[(i * 4 + corner) * 2] ?? 0,
+        quads[(i * 4 + corner) * 2 + 1] ?? 0,
+      ]) as Quad,
+      transform,
+    )
+    const [x, y] = quad.reduce<[number, number]>(
+      ([totalX, totalY], [pointX, pointY]) => [totalX + pointX / 4, totalY + pointY / 4],
+      [0, 0],
+    )
+    proposals.push({ x, y, quad, confidence })
   }
-  return axis(image.width).flatMap((x) => axis(image.height).map((y) => [x, y] as Point))
+  return proposals
 }
 
 function quadBounds(quad: Quad) {
@@ -296,19 +306,11 @@ async function identifyFrame(
   options?: FullFrameOptions,
 ): Promise<FullFrameIdentification> {
   if (!loaded) throw new Error("bundle not loaded")
-  const { constants } = requireIdentification(loaded)
+  requireIdentification(loaded)
   const started = performance.now()
   const settings = scanOptions(options)
-  const proposals: ScanProposal[] = []
-  for (const [x, y] of gridPoints(image, constants.scene)) {
-    assertNotCancelled(id)
-    const coarse = await detect(image, x, y, constants.scene)
-    assertNotCancelled(id)
-    const confidence = upVote(coarse.up, constants)
-    if (confidence >= settings.minDetectorConfidence) {
-      proposals.push({ x, y, quad: coarse.quad, confidence })
-    }
-  }
+  const proposals = await detectTable(image)
+  assertNotCancelled(id)
   const cards: Identification[] = []
   for (const proposal of nonMaximumSuppression(proposals, settings.nmsIouThreshold)) {
     assertNotCancelled(id)
@@ -333,36 +335,6 @@ async function identifyFrame(
     settings.nmsIouThreshold,
   )
   return { cards: deduplicated, totalMs: performance.now() - started }
-}
-
-/** One dense pass of `table_detector.onnx`: every card's box and score, no identity attached. */
-async function detectTable(image: RgbaImage): Promise<TableDetection> {
-  if (!loaded) throw new Error("bundle not loaded")
-  const tableDetector = requireTableDetector(loaded)
-  const started = performance.now()
-  const { input, transform } = letterboxToSquare(image, TABLE_DETECTOR_INPUT)
-  const feeds = {
-    table: new ort.Tensor("uint8", new Uint8Array(input.data.buffer), [
-      TABLE_DETECTOR_INPUT,
-      TABLE_DETECTOR_INPUT,
-      4,
-    ]),
-  }
-  const out = await tableDetector.run(feeds)
-  const quads = out.quads?.data as Float32Array
-  const scores = out.scores?.data as Float32Array
-  const cards: TableDetection["cards"] = []
-  // Scores sort descending; once one drops below the cutoff, the rest is padding.
-  for (let i = 0; i < TABLE_DETECTOR_MAX_DETECTIONS; i += 1) {
-    const score = scores[i] ?? 0
-    if (score < TABLE_DETECTOR_MIN_SCORE) break
-    const quad = [0, 1, 2, 3].map((corner) => [
-      quads[(i * 4 + corner) * 2] ?? 0,
-      quads[(i * 4 + corner) * 2 + 1] ?? 0,
-    ]) as Quad
-    cards.push({ quad: unletterboxQuad(quad, transform), score })
-  }
-  return { cards, totalMs: performance.now() - started }
 }
 
 self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
@@ -391,13 +363,6 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
       }
       const result = await identifyFrame(request.id, image, request.options)
       if (!cancelled.has(request.id)) reply({ type: "frame_identified", id: request.id, result })
-    } else if (request.type === "detect_table") {
-      const image: RgbaImage = {
-        data: new Uint8ClampedArray(request.rgba),
-        width: request.width,
-        height: request.height,
-      }
-      reply({ type: "table_detected", id: request.id, result: await detectTable(image) })
     } else if (request.type === "search") {
       reply({
         type: "matches",

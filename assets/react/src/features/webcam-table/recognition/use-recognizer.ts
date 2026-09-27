@@ -5,7 +5,6 @@ import type {
   FullFrameIdentification,
   FullFrameOptions,
   Identification,
-  TableDetection,
   WorkerRequest,
   WorkerResponse,
 } from "./messages"
@@ -82,7 +81,6 @@ export function useRecognizer(preload = false) {
       } else if (
         message.type === "identified" ||
         message.type === "frame_identified" ||
-        message.type === "table_detected" ||
         message.type === "matches"
       ) {
         settle(pending, message.id)?.resolve(
@@ -199,20 +197,6 @@ export function useRecognizer(preload = false) {
     [request],
   )
 
-  /** One dense pass of the table detector: every card's box and confidence, no identity. */
-  const detectTable = useCallback(
-    (image: RgbaImage, signal?: AbortSignal) => {
-      const rgba = image.data.buffer.slice(0) as ArrayBuffer
-      return request<TableDetection>(
-        (id) => ({ type: "detect_table", id, rgba, width: image.width, height: image.height }),
-        [rgba],
-        undefined,
-        signal,
-      )
-    },
-    [request],
-  )
-
   const search = useCallback(
     (query: string) => request<GalleryArt[]>((id) => ({ type: "search", id, query }), []),
     [request],
@@ -234,7 +218,6 @@ export function useRecognizer(preload = false) {
     ready: state.status === "ready",
     identify,
     identifyFrame,
-    detectTable,
     search,
     printings,
     locate,

@@ -1,82 +1,8 @@
 import { useQueries } from "@tanstack/react-query"
 import { useLayoutEffect, useRef, useState } from "react"
 import { getPrintingDetails } from "./card-details"
-import { CLEAR_MARGIN, isClear } from "./card-suggestions"
-import type { FullFrameIdentification, TableCard } from "./recognition/messages"
 import type { Quad } from "./recognition/pipeline"
-
-export interface SuperAiOverlayCard {
-  id: string
-  quad: Quad
-}
-
-/** The same top-two lead click-to-identify requires before selecting a card automatically. */
-export const SUPER_AI_MARGIN_DEFAULT = CLEAR_MARGIN
-export const SUPER_AI_MARGIN_MIN = 0.02
-export const SUPER_AI_MARGIN_MAX = 0.2
-
-/** Only replace a card with gallery art when its best candidate clearly beats the runner-up,
- * matching click-to-identify's automatic-selection rule. */
-export function overlayCardsFromScan(
-  result: FullFrameIdentification,
-  minMargin: number = SUPER_AI_MARGIN_DEFAULT,
-): SuperAiOverlayCard[] {
-  return result.cards.flatMap((card) => {
-    const top = card.candidates[0]
-    return top && isClear(card.candidates, minMargin) ? [{ id: top.id, quad: card.quad }] : []
-  })
-}
-
-function center(quad: Quad) {
-  return quad.reduce(
-    ([x, y], [pointX, pointY]) => [x + pointX / quad.length, y + pointY / quad.length] as const,
-    [0, 0] as const,
-  )
-}
-
-function containsWithMargin(quad: Quad, point: readonly [number, number]) {
-  const xs = quad.map(([x]) => x)
-  const ys = quad.map(([, y]) => y)
-  const minX = Math.min(...xs)
-  const maxX = Math.max(...xs)
-  const minY = Math.min(...ys)
-  const maxY = Math.max(...ys)
-  const margin = Math.max(maxX - minX, maxY - minY) * 0.2
-  return (
-    point[0] >= minX - margin &&
-    point[0] <= maxX + margin &&
-    point[1] >= minY - margin &&
-    point[1] <= maxY + margin
-  )
-}
-
-/** Keeps an identified card at its last position until it exits a 20%-larger prior box. */
-export function stabilizeSuperAiCards(
-  previous: SuperAiOverlayCard[],
-  next: SuperAiOverlayCard[],
-): SuperAiOverlayCard[] {
-  const available = new Set(previous.keys())
-  return next.map((card) => {
-    const cardCenter = center(card.quad)
-    const matchingIndex = [...available]
-      .filter(
-        (index) =>
-          previous[index]?.id === card.id && containsWithMargin(previous[index].quad, cardCenter),
-      )
-      .sort((left, right) => {
-        const [leftX, leftY] = center(previous[left].quad)
-        const [rightX, rightY] = center(previous[right].quad)
-        return (
-          (leftX - cardCenter[0]) ** 2 +
-          (leftY - cardCenter[1]) ** 2 -
-          ((rightX - cardCenter[0]) ** 2 + (rightY - cardCenter[1]) ** 2)
-        )
-      })[0]
-    if (matchingIndex === undefined) return card
-    available.delete(matchingIndex)
-    return previous[matchingIndex]
-  })
-}
+import type { SuperAiOverlayCard } from "./super-ai"
 
 export interface Size {
   width: number
@@ -131,6 +57,33 @@ export function SuperAiArt({ src, transform }: { src: string; transform: string 
   )
 }
 
+function SuperAiOutline({ quad, name }: { quad: Quad; name: string }) {
+  const [labelX, labelY] = quad.reduce(
+    ([bestX, bestY], [x, y]) => (y < bestY ? [x, y] : [bestX, bestY]),
+    quad[0],
+  )
+  return (
+    <svg className="pointer-events-none absolute inset-0 h-full w-full text-primary" aria-hidden="true">
+      <polygon
+        points={quad.map(([x, y]) => `${x},${y}`).join(" ")}
+        fill="rgba(0, 0, 0, 0.12)"
+        stroke="currentColor"
+        strokeWidth="3"
+      />
+      <text
+        x={labelX}
+        y={Math.max(18, labelY - 6)}
+        className="fill-current text-sm font-bold"
+        paintOrder="stroke"
+        stroke="rgba(0, 0, 0, 0.8)"
+        strokeWidth="4"
+      >
+        {name}
+      </text>
+    </svg>
+  )
+}
+
 function useSize(element: React.RefObject<HTMLElement | null>) {
   const [size, setSize] = useState<Size>({ width: 0, height: 0 })
   useLayoutEffect(() => {
@@ -176,67 +129,17 @@ export function SuperAiOverlay({
       aria-hidden="true"
     >
       {cards.map((card, index) => {
-        const transform = quadTransform(mapSourceQuad(card.quad, source, stage, flip))
-        const src = details[index]?.data?.image_uris.normal
-        if (!transform || !src) return null
-        return <SuperAiArt key={`${card.id}-${index}`} src={src} transform={transform} />
+        const quad = mapSourceQuad(card.quad, source, stage, flip)
+        const transform = quadTransform(quad)
+        const detail = details[index]?.data
+        if (!transform || !detail?.image_uris.normal) return null
+        return (
+          <div key={`${card.id}-${index}`}>
+            <SuperAiArt src={detail.image_uris.normal} transform={transform} />
+            <SuperAiOutline quad={quad} name={detail.name} />
+          </div>
+        )
       })}
-    </div>
-  )
-}
-
-/** The table detector's own box + confidence for one card, before any identification. */
-export type TableDetectionCard = TableCard
-
-/**
- * Outlines every card the table detector found, labelled with its confidence — the detector
- * has no notion of *which* card it is (that needs the embedding model, which doesn't exist
- * yet), so unlike `SuperAiOverlay` this draws boxes, not art.
- */
-export function TableDetectionOverlay({
-  cards,
-  source,
-  flip,
-}: {
-  cards: TableDetectionCard[]
-  source: Size | null
-  flip: ViewerFlip
-}) {
-  const root = useRef<HTMLDivElement>(null)
-  const stage = useSize(root)
-  if (!source || !stage.width || !stage.height)
-    return <div ref={root} className="pointer-events-none absolute inset-0" />
-  return (
-    <div
-      ref={root}
-      role="img"
-      aria-label={`${cards.length} card${cards.length === 1 ? "" : "s"} detected on the table`}
-      className="pointer-events-none absolute inset-0 overflow-hidden"
-    >
-      <svg
-        className="absolute inset-0 h-full w-full"
-        viewBox={`0 0 ${stage.width} ${stage.height}`}
-      >
-        {cards.map((card, index) => {
-          const quad = mapSourceQuad(card.quad, source, stage, flip)
-          return (
-            <g key={index}>
-              <polygon
-                points={quad.map(([x, y]) => `${x},${y}`).join(" ")}
-                className="fill-accent/10 stroke-accent"
-                strokeWidth={2}
-              />
-              <text
-                x={quad[0][0]}
-                y={Math.max(12, quad[0][1] - 6)}
-                className="fill-accent text-xs font-semibold"
-              >
-                {Math.round(card.score * 100)}%
-              </text>
-            </g>
-          )
-        })}
-      </svg>
     </div>
   )
 }

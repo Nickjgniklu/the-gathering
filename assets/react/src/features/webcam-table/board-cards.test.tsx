@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, expect, it, vi } from "vite-plus/test"
 import { BoardCardTray } from "./board-cards"
-import type { SuperAiOverlayCard } from "./super-ai-overlay"
+import type { SuperAiOverlayCard } from "./super-ai"
 import type { BoardCard, TableParticipant } from "./use-webcam-room"
 
 afterEach(cleanup)

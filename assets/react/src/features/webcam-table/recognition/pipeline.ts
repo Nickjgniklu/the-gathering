@@ -59,13 +59,8 @@ export interface RgbaImage {
   height: number
 }
 
-/** `table_detector.onnx`'s fixed contract (`ml/cardid/table_detector.py`): a dense, single-pass
- * detector over a square input, trained on synthetic scenes that were always rendered square.
- * A camera frame rarely is, so it must be letterboxed — not stretched — into that square, or
- * every card's apparent aspect ratio skews with the frame's. */
 export const TABLE_DETECTOR_INPUT = 384
 export const TABLE_DETECTOR_MAX_DETECTIONS = 40
-/** Below this, `scores` is sorted padding rather than a real (if low-confidence) card. */
 export const TABLE_DETECTOR_MIN_SCORE = 0.3
 
 export interface LetterboxTransform {
@@ -74,8 +69,7 @@ export interface LetterboxTransform {
   offsetY: number
 }
 
-/** Fits `image` into a `size`×`size` square, preserving aspect ratio and padding with opaque
- * black. Bilinear with edge replication, mirroring `resampleWindow`'s resampling. */
+/** Fits a camera frame into the table detector's square input without distorting card shapes. */
 export function letterboxToSquare(
   image: RgbaImage,
   size: number,
@@ -85,44 +79,23 @@ export function letterboxToSquare(
   const height = Math.max(1, Math.round(image.height * scale))
   const offsetX = Math.floor((size - width) / 2)
   const offsetY = Math.floor((size - height) / 2)
-  const { data: src, width: srcWidth, height: srcHeight } = image
-  const maxX = srcWidth - 1
-  const maxY = srcHeight - 1
+  const { data: source, width: sourceWidth, height: sourceHeight } = image
   const data = new Uint8ClampedArray(size * size * 4)
   for (let i = 3; i < data.length; i += 4) data[i] = 255
-  for (let j = 0; j < height; j += 1) {
-    const sy = (j + 0.5) / scale - 0.5
-    const y0 = Math.min(maxY, Math.max(0, Math.floor(sy)))
-    const y1 = Math.min(maxY, y0 + 1)
-    const fy = Math.min(1, Math.max(0, sy - y0))
-    for (let i = 0; i < width; i += 1) {
-      const sx = (i + 0.5) / scale - 0.5
-      const x0 = Math.min(maxX, Math.max(0, Math.floor(sx)))
-      const x1 = Math.min(maxX, x0 + 1)
-      const fx = Math.min(1, Math.max(0, sx - x0))
-      const p00 = (y0 * srcWidth + x0) * 4
-      const p01 = (y0 * srcWidth + x1) * 4
-      const p10 = (y1 * srcWidth + x0) * 4
-      const p11 = (y1 * srcWidth + x1) * 4
-      const w00 = (1 - fx) * (1 - fy)
-      const w01 = fx * (1 - fy)
-      const w10 = (1 - fx) * fy
-      const w11 = fx * fy
-      const dst = ((j + offsetY) * size + (i + offsetX)) * 4
-      for (let c = 0; c < 3; c += 1) {
-        data[dst + c] = Math.round(
-          (src[p00 + c] ?? 0) * w00 +
-            (src[p01 + c] ?? 0) * w01 +
-            (src[p10 + c] ?? 0) * w10 +
-            (src[p11 + c] ?? 0) * w11,
-        )
-      }
+  for (let y = 0; y < height; y += 1) {
+    const sourceY = Math.min(sourceHeight - 1, Math.max(0, Math.floor((y + 0.5) / scale - 0.5)))
+    for (let x = 0; x < width; x += 1) {
+      const sourceX = Math.min(sourceWidth - 1, Math.max(0, Math.floor((x + 0.5) / scale - 0.5)))
+      const from = (sourceY * sourceWidth + sourceX) * 4
+      const to = ((y + offsetY) * size + x + offsetX) * 4
+      data[to] = source[from] ?? 0
+      data[to + 1] = source[from + 1] ?? 0
+      data[to + 2] = source[from + 2] ?? 0
     }
   }
   return { input: { data, width: size, height: size }, transform: { scale, offsetX, offsetY } }
 }
 
-/** Maps a quad from `letterboxToSquare`'s output square back to the original image's pixels. */
 export function unletterboxQuad(quad: Quad, transform: LetterboxTransform): Quad {
   return quad.map(([x, y]) => [
     (x - transform.offsetX) / transform.scale,

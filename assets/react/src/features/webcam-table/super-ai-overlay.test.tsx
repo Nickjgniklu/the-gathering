@@ -3,12 +3,10 @@ import { render, screen } from "@testing-library/react"
 import type { FullFrameIdentification, Identification } from "./recognition/messages"
 import type { Candidate, Quad } from "./recognition/pipeline"
 import {
-  mapSourceQuad,
   overlayCardsFromScan,
-  quadTransform,
   stabilizeSuperAiCards,
-  SuperAiArt,
-} from "./super-ai-overlay"
+} from "./super-ai"
+import { mapSourceQuad, quadTransform, SuperAiArt } from "./super-ai-overlay"
 
 const quad = [
   [100, 50],
