@@ -747,6 +747,33 @@ uv run python -m cardid.nonstandard_cards download --per-category 40
 uv run python -m cardid.nonstandard_cards evaluate --checkpoint data/runs/<run>/best.pt --scenes-per-category 30
 ```
 
+### Card size and density: a severe blind spot below 1/14 of frame width
+
+`size_density_analysis.py` slices an existing test split's recall by card size (short side as a
+fraction of frame width) and by scene density, for free -- no new data, just a different cut of
+what `test`/`challenge` already render. It found card count barely matters up to 20 (sparse 100%,
+crowded 98.0%, exact count 20 at 97.5%), but also that `test` contains **zero cards below 1/14**
+of frame width, because `angled_720p` (the smallest camera profile at the time) never rendered
+anything smaller.
+
+That gap turned out to be real and severe, not just an evaluation blind spot: `small_card_probe.py`
+renders a dedicated eval set explicitly in the 1/20-1/14 range (below every profile's minimum) and
+found recall **collapses to 0% below 1/17** and 41.9% between 1/17 and 1/14, against ~99% for
+anything in the trained range. This is not surprising in hindsight -- a card at 1/17 of a 384px
+input is ~23px wide, barely 5-6 cells across the model's stride-4 grid, and the network had never
+seen anything that small during training -- but it means a webcam framing a full playgroup's board
+from a normal distance could be handing the detector cards it cannot see at all.
+
+Fixed by adding `distant_wide` (`short_frac` 0.045-0.09, i.e. roughly 1/22 to 1/11) to
+`CAMERA_PROFILES` and `train`'s rotation, then regenerating `train` and fine-tuning again; see
+`data/runs/table-a-hardware-stress` (or its successor) and re-run `small_card_probe.py` for the
+after numbers.
+
+```sh
+uv run python -m cardid.size_density_analysis --checkpoint data/runs/<run>/best.pt --manifest-dir ~/the-gathering-cardid/table-scenes
+uv run python -m cardid.small_card_probe --checkpoint data/runs/<run>/best.pt
+```
+
 ### Exporting the dense detector for the rest of the app
 
 `export_table_detector.py` exports a `TableCenterNet` checkpoint to a standalone ONNX artifact,

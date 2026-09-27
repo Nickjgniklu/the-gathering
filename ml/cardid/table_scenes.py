@@ -74,6 +74,10 @@ CAMERA_PROFILES = {
     "overhead_1080p": {"short_frac": (0.09, 0.15), "severity": 1.0},
     "angled_720p": {"short_frac": (0.07, 0.12), "severity": 1.35},
     "closeup_4k": {"short_frac": (0.14, 0.22), "severity": 0.75},
+    # A card held at typical webcam distance can be 1/14-1/20 of the frame width; every other
+    # profile's minimum (angled_720p's 0.07, i.e. 1/14) left that range completely untrained,
+    # which a size probe found collapses recall to 0% below 1/17 (see ml/README.md).
+    "distant_wide": {"short_frac": (0.045, 0.09), "severity": 1.2},
 }
 
 # Inclusive card-count ranges for sparse/normal/crowded battlefields.
@@ -83,7 +87,7 @@ SPLITS = ("train", "val", "test", "challenge")
 SPLIT_INDEX = {name: i for i, name in enumerate(SPLITS)}
 SPLIT_SETUPS = {"train": ("lanes", "cluster", "spread"), "val": ("battlefield",), "test": ("duel",), "challenge": ("duel",)}
 SPLIT_CAMERA_PROFILES = {
-    "train": ("overhead_1080p", "closeup_4k"),
+    "train": ("overhead_1080p", "closeup_4k", "distant_wide"),
     "val": ("angled_720p",),
     "test": ("angled_720p",),
     "challenge": ("angled_720p",),
