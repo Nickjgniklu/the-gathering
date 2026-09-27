@@ -713,6 +713,40 @@ run reached only 78% recall / 99.5% precision after 63 epochs, against the pretr
 from-scratch variant is no longer supported here. None of this identifies cards: that needs a
 trained `ArtIndex` embedding model this tooling does not have.
 
+### Two-phase training: unbalanced, then oversampled for non-standard frames
+
+The shipped checkpoint was trained in two phases, not one run:
+
+1. **Phase 1 (unbalanced).** `table-a-pretrained-gpu`, 120 epochs on the natural card
+   distribution (`data/cards` sampled randomly from the catalog, ~88% ordinary black-bordered
+   cards, the rest a mix of borderless/showcase/extended-art/etc. in whatever proportion Scryfall
+   happens to have them). Reached 95.8% recall / 99.9% precision on `val` and looked strong
+   across the board -- but a targeted check afterwards (`nonstandard_cards.py`,
+   `evaluate_nonstandard.py`) found a real, reproducible ~1-2 percentage point recall gap on
+   textless, full-art, and extended-art cards specifically versus an ordinary-bordered baseline,
+   even though the gap did not show up in the aggregate `val`/`test` numbers (those splits are
+   themselves ~88% ordinary, so a category-specific weakness is diluted away).
+2. **Phase 2 (oversampled).** Downloaded ~40 more of each non-standard category via Scryfall
+   search (`nonstandard_cards.py download`) and merged them into `data/cards`, taking it from
+   500 cards (~88% ordinary) to 767 (~65% ordinary) -- a deliberate, large oversampling of the
+   categories that showed a gap, not a proportional rebalance to their real-world frequency.
+   Regenerated `train` at a larger 12,000 scenes (`table_scenes.py --split train --train 12000`,
+   same seed) so the added cards get real repetition rather than diluting into a same-sized
+   dataset, then fine-tuned from phase 1's checkpoint (`--resume table-a-pretrained-gpu/best.pt`).
+   Re-running the same non-standard check afterwards, at the same seed for a fair comparison,
+   showed textless/full-art/extended-art recall closing to match the ordinary baseline (100%),
+   for a negligible precision cost (one extra false positive in one category out of ~165).
+
+The lesson worth keeping: a category-specific weakness can hide inside a strong-looking aggregate
+metric when the category is rare in both training and evaluation data. `nonstandard_cards.py`
+downloads a dedicated, deliberately-not-random sample per category precisely so evaluation does
+not inherit the same skew as the training set it is trying to check.
+
+```sh
+uv run python -m cardid.nonstandard_cards download --per-category 40
+uv run python -m cardid.nonstandard_cards evaluate --checkpoint data/runs/<run>/best.pt --scenes-per-category 30
+```
+
 ### Exporting the dense detector for the rest of the app
 
 `export_table_detector.py` exports a `TableCenterNet` checkpoint to a standalone ONNX artifact,
