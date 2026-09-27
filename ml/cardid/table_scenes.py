@@ -339,6 +339,94 @@ def render_table_scene(
     }
 
 
+def render_table_scene_pair(
+    seed: int,
+    cards: CardBank,
+    arts: ArtBank,
+    setup: str,
+    camera_profile: str = "overhead_1080p",
+    count: int = 8,
+    size: int = 1280,
+    out: int = 640,
+    severity: float = 1.0,
+    clutter_rate: float = 0.6,
+    round_negative_rate: float = 0.4,
+) -> tuple[np.ndarray, np.ndarray, dict]:
+    """Render a (background, current) pair sharing one background and one set of static desk
+    clutter, for `table_detector_dual.TableCenterNetDual`: `background` is what a startup capture
+    (before any cards are placed) would show, `current` is the same desk with cards played on it.
+    Clutter is drawn once, before either canvas diverges, so it lands at the same position in
+    both; cards are drawn only onto `current`. Each half gets its own independent `photometrics`
+    call (different exposure/white-balance/noise draws), since the two captures are never
+    pixel-registered in deployment -- a startup photo and a later gameplay frame differ the same
+    way any two webcam captures do (see `table_scene_pair_dataset.py` for the harsher, explicit
+    hardware-stress drift layered on top at training time). Unlike `render_table_scene`, clutter
+    rates default higher and there is no stacking/sleeve/loader variety: this model's job is
+    background suppression, not the general detection cases `render_table_scene` already covers.
+    """
+    if setup not in SETUPS:
+        raise ValueError(f"unknown setup {setup!r}; choose from {SETUPS}")
+    if camera_profile not in CAMERA_PROFILES:
+        raise ValueError(f"unknown camera profile {camera_profile!r}; choose from {tuple(CAMERA_PROFILES)}")
+    if not 0 <= count <= len(cards):
+        raise ValueError(f"count must be between 0 and the number of supplied cards ({len(cards)})")
+    rng = np.random.default_rng(seed)
+    profile = CAMERA_PROFILES[camera_profile]
+    canvas = background(rng, arts, size)
+
+    negatives = []
+    if clutter_rate > 0 and rng.random() < clutter_rate:
+        for _ in range(int(rng.integers(1, 3))):
+            center, long_side = rng.uniform(0, size, size=2), size * rng.uniform(0.08, 0.22)
+            real_clutter_object(canvas, rng, center, long_side)
+            negatives.append({"kind": "real_clutter", "bbox": [*(center - long_side * 0.7), *(center + long_side * 0.7)]})
+    if round_negative_rate > 0 and rng.random() < round_negative_rate:
+        center, radius = rng.uniform(0, size, size=2), size * rng.uniform(0.03, 0.09)
+        round_object(canvas, rng, center, radius)
+        negatives.append({"kind": "round_object", "bbox": [*(center - radius), *(center + radius)]})
+    bg_canvas = canvas.copy()  # the startup capture: background + static clutter, no cards yet
+
+    poses = _poses(rng, setup, count, size, profile)
+    placed = len(poses)
+    indices = rng.choice(len(cards), placed, replace=False) if placed else np.empty(0, dtype=int)
+    quads = [quad_from_pose(x, y, short, angle + rng.uniform(-8, 8), rng) for x, y, short, angle in poses]
+    masks = []
+    for index, quad in zip(indices, quads, strict=True):
+        card_alpha = draw_card(canvas, rng, cards, quad, detail=out / size, index=int(index))
+        if rng.random() < min(OCCLUDER_RATE * severity, 0.9):
+            occluders(canvas, rng, quad, cards, detail=out / size)
+        masks.append(card_alpha > 0.5)
+    records = []
+    for i, (index, quad, mask) in enumerate(zip(indices, quads, masks, strict=True)):
+        later = np.logical_or.reduce(masks[i + 1 :]) if i + 1 < placed else np.zeros_like(mask)
+        occluded = float((mask & later).sum() / max(mask.sum(), 1))
+        out_quad = quad * (out / size)
+        short_px = quad_short(out_quad)
+        records.append(
+            TableCard(
+                card_id=cards.paths[int(index)].stem,
+                quad=out_quad.tolist(),
+                bbox=list(quad_bbox(out_quad)),
+                orientation=int(round(np.degrees(np.arctan2(out_quad[1, 1] - out_quad[0, 1], out_quad[1, 0] - out_quad[0, 0]))) % 360),
+                occluded_fraction=occluded,
+                identifiable=occluded < IDENTIFIABLE_MAX_OCCLUSION and short_px >= IDENTIFIABLE_MIN_SHORT_PX,
+            )
+        )
+    sev = profile["severity"] * severity
+    bg_image = photometrics(cv2.resize(np.clip(bg_canvas, 0, 255).astype(np.uint8), (out, out), interpolation=cv2.INTER_AREA), rng, out / size, severity=sev)
+    cur_image = photometrics(cv2.resize(np.clip(canvas, 0, 255).astype(np.uint8), (out, out), interpolation=cv2.INTER_AREA), rng, out / size, severity=sev)
+    scale = out / size
+    return bg_image, cur_image, {
+        "seed": seed,
+        "setup": setup,
+        "camera_profile": camera_profile,
+        "cards": [asdict(record) for record in records],
+        "negatives": [{"kind": n["kind"], "bbox": [v * scale for v in n["bbox"]]} for n in negatives],
+        "width": out,
+        "height": out,
+    }
+
+
 def _scene_seed(seed: int, split: str, ordinal: int) -> int:
     return int(np.random.SeedSequence([seed, SPLIT_INDEX[split], ordinal]).generate_state(1)[0])
 

@@ -134,13 +134,14 @@ def table_detector_loss(
     pose_weight: float = 1.0,
     up_weight: float = 1.0,
     hard_neg_mask: torch.Tensor | None = None,
+    hard_neg_weight: float = HARD_NEG_WEIGHT,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     """Focal loss on every cell's heatmap plus pose/up regression masked to instance centres.
-    `hard_neg_mask`, when given, upweights the heatmap's background penalty by `HARD_NEG_WEIGHT`
-    over clutter/round-object cells (see `table_scenes.py`'s hard negatives and
-    `build_targets`)."""
+    `hard_neg_mask`, when given, upweights the heatmap's background penalty by `hard_neg_weight`
+    (default `HARD_NEG_WEIGHT`) over clutter/round-object cells (see `table_scenes.py`'s hard
+    negatives and `build_targets`)."""
     n_pos = mask.sum().clamp(min=1)
-    neg_weight = 1 + (HARD_NEG_WEIGHT - 1) * hard_neg_mask if hard_neg_mask is not None else None
+    neg_weight = 1 + (hard_neg_weight - 1) * hard_neg_mask if hard_neg_mask is not None else None
     hl = heat_loss(heat_logits, heat_target, neg_weight=neg_weight)
     size_l = ((pose[:, :1] - pose_target[:, :1]).abs() * mask).sum() / n_pos
     angle_l = (((pose[:, 1:] - pose_target[:, 1:]) ** 2).sum(dim=1, keepdim=True) * mask).sum() / n_pos
