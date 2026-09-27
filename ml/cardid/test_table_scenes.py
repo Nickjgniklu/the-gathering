@@ -215,7 +215,17 @@ class RenderTableSceneTest(unittest.TestCase):
         # identifiable-size floor): the earlier one is entirely covered by the later one.
         with patch.object(table_scenes, "_poses", return_value=[(100, 100, 60, 0), (100, 100, 60, 0)]):
             _, record = table_scenes.render_table_scene(
-                7, self.cards, self.arts, "spread", count=2, size=256, out=128, stack_rate=0.0, clutter_rate=0.0, round_negative_rate=0.0
+                7,
+                self.cards,
+                self.arts,
+                "spread",
+                count=2,
+                size=256,
+                out=128,
+                stack_rate=0.0,
+                clutter_rate=0.0,
+                round_negative_rate=0.0,
+                real_clutter_rate=0.0,
             )
         first, second = record["cards"]
         self.assertGreater(first["occluded_fraction"], 0.9)
