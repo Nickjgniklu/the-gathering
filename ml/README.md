@@ -935,6 +935,55 @@ the remaining false positives concentrate in the same 3 captures (`001`, `002`, 
 already the noisiest going in. Exported and pushed as `table-a-realclutter-v5`, the current
 shipped checkpoint.
 
+## Parked experiment: a dual-input (background + current) detector
+
+This branch (`feat/background-subtraction-detector`) prototypes a different approach to the same
+real-world false-positive problem: instead of teaching the network what clutter *looks like*
+(procedural or real-photographed hard negatives, both on the main branch), give it a background
+reference captured once when a table session starts, before any cards are on the desk, so it can
+directly compare against exactly what is already sitting on *this* desk.
+
+- `TableCenterNetDual` (`table_detector_dual.py`): `TableCenterNet` with its first conv inflated
+  from 3 to 6 channels (background RGB + current RGB), duplicating and halving the ImageNet-
+  pretrained weights. Warm-starting from a single-input checkpoint via `--resume-single`
+  immediately recovers full single-frame detection accuracy before any dual-input-specific
+  training (confirmed by a smoke test) -- the inflated weights already know how to detect cards,
+  they just haven't learned to *use* the second image yet.
+- `render_table_scene_pair` / `TableScenePairDataset`: renders a (background, current) pair
+  sharing one background and one set of static clutter, diverging only at the card-drawing step,
+  each half independently photometrically augmented (and independently hardware-stressed at
+  different rates) since the two are never pixel-registered in deployment.
+- `table_detector_loss` gained an explicit `hard_neg_weight` parameter (was a hardcoded module
+  constant) so this script can tune it independently of the single-input training's value.
+
+**Result** (run `bgsub-a`, warm-started from `table-a-realclutter-v5`, 10 epochs, clean
+convergence to 100%/100% on synthetic validation): tested against the golden real-capture
+dataset using capture `002`'s `desk_clean.jpg` as the background reference for all 11 other
+captures (the realistic deployment scenario -- one background captures many later frames):
+
+|                    | single-input (`table-a-realclutter-v5`) | dual-input (`bgsub-a`) |
+|--------------------|:---:|:---:|
+| recall             | ~90% | 77.7% |
+| precision          | 87.4% | 87.9% |
+| FP rate on negatives | 18.5% | **4.5%** |
+
+The core hypothesis is validated -- background comparison suppresses false positives on real
+static clutter dramatically (FP rate down to a quarter) -- but recall regressed enough to erase
+most of the win, and **10 epochs did not fix it**: recall was already 78.6% after just 2 epochs
+and did not improve with 8 more, despite the synthetic validation metric hitting a perfect
+100%/100% well before the end. That gap between perfect synthetic validation and flat real
+recall means this is not an undertraining problem -- the synthetic background/current drift
+(independent `photometrics` plus 15-30% `hardware_stress` rates) is not representative of the
+real drift between a background captured once and a current frame from later in the same
+session. Fixing that needs harsher/more-realistic simulated drift between the pair (a bigger
+simulated time gap), not more epochs on the current recipe.
+
+Parked here rather than continued: a same-session inference-time idea (tiling the frame into
+overlapping chunks so each one needs less downsampling per card, tested against the existing
+single-input checkpoint with no retraining) looked like a cheaper next step to try first. Resume
+this branch if that does not pan out, starting with harsher training-time background/current
+drift simulation rather than more epochs of the current one.
+
 ### Exporting the dense detector for the rest of the app
 
 `export_table_detector.py` exports a `TableCenterNet` checkpoint to a standalone ONNX artifact,
