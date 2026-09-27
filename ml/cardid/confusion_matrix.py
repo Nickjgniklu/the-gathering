@@ -255,8 +255,10 @@ def run(checkpoint: Path, scenes_per_category: int, cards_per_scene: int, seed: 
                 continue
             n_captures += 1
             annotation = json.loads(annotation_path.read_text())
-            crop_path = capture_dir / "video_crop.png"
-            image = cv2.cvtColor(cv2.imread(str(crop_path)), cv2.COLOR_BGR2RGB)
+            image_path = capture_dir / "video_crop.png"
+            if not image_path.exists():
+                image_path = capture_dir / "frame.jpg"
+            image = cv2.cvtColor(cv2.imread(str(image_path)), cv2.COLOR_BGR2RGB)
             resized, scale, (pad_x, pad_y) = letterbox_to_square(image, TABLE_INPUT)
             pad = np.float32([pad_x, pad_y])
             truth = [(np.float32(c["quad"]) + pad) * scale for c in annotation["cards"]]
