@@ -1,0 +1,21 @@
+{
+  "source": "user-provided screenshot of deployed Super AI table detector, dark/pink-lit desk webcam capture",
+  "note": "Single real capture (n=1). Not statistically meaningful alone -- use for calibration sanity-checks and as a seed for a growing real-captures set, not as a reliable recall/precision estimate.",
+  "video_crop": {"left": 304, "top": 197, "right": 1144, "bottom": 754, "comment": "crop of frame.png this annotation's coordinates are relative to; see video_crop.png"},
+  "width": 840,
+  "height": 557,
+  "cards": [
+    {"id": "top_rotated", "quad": [[360, 70], [450, 100], [400, 190], [348, 155]], "note": "model scored 31% -- correct card, low confidence under dark+pink cast"},
+    {"id": "cluster_left", "quad": [[140, 225], [220, 235], [210, 320], [130, 310]], "note": "model scored 83%"},
+    {"id": "cluster_right", "quad": [[222, 215], [295, 225], [288, 320], [215, 310]], "note": "model scored 43% -- adjacent to cluster_left, touching bounding boxes, lower confidence than its neighbor despite similar lighting"},
+    {"id": "lower_left", "quad": [[180, 325], [260, 335], [250, 440], [170, 430]], "note": "model scored 35%"},
+    {"id": "lower_right", "quad": [[290, 335], [415, 345], [405, 430], [280, 420]], "note": "model scored 66%"}
+  ],
+  "negatives": [
+    {"id": "deck_stack", "box": [10, 235, 115, 345], "kind": "deck_edge_on", "note": "~20-card deck viewed edge-on, spine visible -- model boxed this as a single low-confidence (36%) card; not a real single-card target, should not fire at all"},
+    {"id": "round_coaster", "box": [505, 280, 610, 350], "kind": "round_object", "note": "patterned round coaster/plate; model did not fire on it in this frame, kept as a hard-negative regression check"},
+    {"id": "yellow_tin", "box": [0, 335, 140, 420], "kind": "clutter", "note": "yellow-lidded tin/container, partial at frame edge"},
+    {"id": "headphones", "box": [395, 220, 730, 520], "kind": "clutter", "note": "large light-colored headphones occupying a big fraction of frame; amorphous, non-card-shaped"},
+    {"id": "false_positive_blob", "box": [35, 455, 200, 555], "kind": "round_object", "note": "the model actually drew a detection box here in the source screenshot on a round/blurry non-card object at the bottom edge -- confirmed false positive, primary hard-negative-mining target"}
+  ]
+}

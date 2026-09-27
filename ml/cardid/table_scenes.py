@@ -29,6 +29,11 @@ Every scene is reproducible from its seed alone (`seed`, `split`, ordinal -> one
 fingerprint (which card images were available), and the split rules, so a manifest is
 self-describing even without the code that made it. Generated images and manifests are not
 meant for Git (see the `--out` default and `ml/README.md`).
+
+A scene can also carry clutter blobs and round objects (`scene_renderer.clutter_object`,
+`round_object`) as unlabelled hard negatives, and, rarely, a deliberate 2-card stack
+(`STACK_RATE`) -- all three added after a real deployed-feature capture showed unmodeled desk
+clutter and a false positive on a round object (see `ml/README.md`).
 """
 
 from __future__ import annotations
@@ -47,7 +52,7 @@ import numpy as np
 from .constants import CARD_ASPECT
 from .image_bank import ArtBank, CardBank, list_arts
 from .scene_geometry import quad_bbox, quad_from_pose, quad_short
-from .scene_renderer import background, draw_card, draw_sleeve_ring, draw_toploader, gloss, occluders, photometrics
+from .scene_renderer import background, clutter_object, draw_card, draw_sleeve_ring, draw_toploader, gloss, occluders, photometrics, round_object
 
 # Safety margin (over a card's long side, the worst case for any of the 4 rotations) between
 # grid cell centres, so neighbouring cards do not touch even with the small per-card angle
@@ -58,7 +63,7 @@ from .scene_renderer import background, draw_card, draw_sleeve_ring, draw_toploa
 FOOTPRINT_MARGIN = 1.25
 CELL_JITTER = 0.06
 
-RENDERER_VERSION = "table-scenes-v2"
+RENDERER_VERSION = "table-scenes-v4"  # v3 added clutter/round hard negatives and stacking; v4 raises STACK_RATE
 
 # Spatial arrangements, each a non-overlapping grid over a different region/shape:
 # "lanes" packs a tidy contiguous block; "spread" scatters the same grid's cells with gaps;
@@ -112,6 +117,19 @@ SLEEVE_RATE = 0.35
 LOADER_RATE = 0.12
 GLOSS_RATE = 0.15
 OCCLUDER_RATE = 0.2  # baseline chance an *individual* card gets a nearby die/finger/loose card
+
+# Scene-level (not per-card) additions motivated by a real deployed-feature capture that showed
+# unmodeled desk clutter (headphones, a tin) and a false-positive detection on a round object
+# (see ml/README.md): a handful of generic clutter blobs and round hard-negative objects
+# scattered per scene, and an occasional deliberate 2-card stack distinct from the rare
+# aura/equipment occluder above (that one is a small object mostly over one card; this is two
+# whole cards nearly coincident, both individually labelled).
+CLUTTER_RATE = 0.35  # chance a scene gets 1-2 clutter blobs
+ROUND_NEGATIVE_RATE = 0.25  # chance a scene gets 1 round hard-negative object
+# 0.12 (v3) only brought stacked-card recall from 18% to 26% over one fine-tune -- clearly not
+# enough exposure for a genuinely hard case; doubled for v4 alongside the new hard-negative loss
+# upweighting (see table_detector.HARD_NEG_WEIGHT) that targets the other stagnant metric.
+STACK_RATE = 0.25  # chance two cards in a scene are deliberately stacked near-coincident
 
 
 @dataclass(frozen=True)
@@ -210,6 +228,9 @@ def render_table_scene(
     size: int = 1280,
     out: int = 640,
     severity: float = 1.0,
+    stack_rate: float = STACK_RATE,
+    clutter_rate: float = CLUTTER_RATE,
+    round_negative_rate: float = ROUND_NEGATIVE_RATE,
 ) -> tuple[np.ndarray, dict]:
     """Render one seeded scene and return RGB pixels plus a portable manifest record."""
     if setup not in SETUPS:
@@ -226,6 +247,17 @@ def render_table_scene(
     # (a real close-up camera cannot show 20 cards either); fewer cards render rather than
     # letting them overlap. `placed` is the count actually used everywhere below.
     placed = len(poses)
+    stacked_pair: tuple[int, int] | None = None
+    if placed >= 2 and stack_rate > 0 and rng.random() < stack_rate:
+        # Collapse the last-drawn card onto an earlier one's centre (with a little jitter and a
+        # fresh rotation): the last-drawn card ends up on top, so the lower one gets a genuine,
+        # heavily-occluded stack rather than the aura occluder's small-object-over-one-card look.
+        victim = int(rng.integers(0, placed - 1))
+        vx, vy, vshort, _ = poses[victim]
+        _, _, tshort, _ = poses[-1]
+        jitter = rng.uniform(-0.12, 0.12, size=2) * vshort
+        poses[-1] = (vx + jitter[0], vy + jitter[1], tshort, int(rng.choice((0, 90, 180, 270))))
+        stacked_pair = (victim, placed - 1)
     indices = rng.choice(len(cards), placed, replace=False) if placed else np.empty(0, dtype=int)
     quads = [quad_from_pose(x, y, short, angle + rng.uniform(-8, 8), rng) for x, y, short, angle in poses]
     masks = []
@@ -247,6 +279,16 @@ def render_table_scene(
         if rng.random() < min(OCCLUDER_RATE * severity, 0.9):
             occluders(canvas, rng, quad, cards, detail=out / size)
         masks.append(combined > 0.5)
+    negatives = []
+    if clutter_rate > 0 and rng.random() < clutter_rate:
+        for _ in range(int(rng.integers(1, 3))):
+            center, radius = rng.uniform(0, size, size=2), size * rng.uniform(0.05, 0.14)
+            clutter_object(canvas, rng, center, radius)
+            negatives.append({"kind": "clutter", "bbox": [*(center - radius * 1.2), *(center + radius * 1.2)]})
+    if round_negative_rate > 0 and rng.random() < round_negative_rate:
+        center, radius = rng.uniform(0, size, size=2), size * rng.uniform(0.03, 0.08)
+        round_object(canvas, rng, center, radius)
+        negatives.append({"kind": "round_object", "bbox": [*(center - radius), *(center + radius)]})
     records = []
     for i, (index, quad, mask) in enumerate(zip(indices, quads, masks, strict=True)):
         later = np.logical_or.reduce(masks[i + 1 :]) if i + 1 < placed else np.zeros_like(mask)
@@ -269,11 +311,14 @@ def render_table_scene(
         out / size,
         severity=profile["severity"] * severity,
     )
+    scale = out / size
     return image, {
         "seed": seed,
         "setup": setup,
         "camera_profile": camera_profile,
         "cards": [asdict(record) for record in records],
+        "negatives": [{"kind": n["kind"], "bbox": [v * scale for v in n["bbox"]]} for n in negatives],
+        "stacked_pair": list(stacked_pair) if stacked_pair is not None else None,
         "width": out,
         "height": out,
     }

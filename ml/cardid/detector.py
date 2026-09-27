@@ -178,12 +178,19 @@ def heat_targets(quads: torch.Tensor, size: int = HEAT_SIZE) -> torch.Tensor:
     return g.max(dim=1, keepdim=True).values.view(n, 1, size, size)
 
 
-def heat_loss(logits: torch.Tensor, target: torch.Tensor, alpha: float = 2.0, beta: float = 4.0) -> torch.Tensor:
-    """CenterNet's penalty-reduced pixelwise focal loss, normalised by the number of peaks."""
+def heat_loss(logits: torch.Tensor, target: torch.Tensor, alpha: float = 2.0, beta: float = 4.0, neg_weight: torch.Tensor | None = None) -> torch.Tensor:
+    """CenterNet's penalty-reduced pixelwise focal loss, normalised by the number of peaks.
+    `neg_weight`, when given, multiplies the negative (background) term per cell -- table_detector
+    uses this to penalise a false-positive activation harder over a hard-negative object (a
+    clutter blob or round object with no card there at all) than over ordinary background, since
+    plain co-occurrence in the training images gives this loss no reason on its own to treat
+    those pixels any differently from any other background pixel."""
     p = torch.sigmoid(logits).clamp(1e-4, 1 - 1e-4)
     pos = (target > 0.999).float()
     pos_loss = -(1 - p).pow(alpha) * torch.log(p) * pos
     neg_loss = -(1 - target).pow(beta) * p.pow(alpha) * torch.log(1 - p) * (1 - pos)
+    if neg_weight is not None:
+        neg_loss = neg_loss * neg_weight
     return (pos_loss.sum() + neg_loss.sum()) / pos.sum().clamp(min=1)
 
 

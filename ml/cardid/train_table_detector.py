@@ -127,10 +127,10 @@ def main() -> None:
     for epoch in range(args.epochs):
         model.train()
         started, losses, parts_sum = time.time(), [], {"heat": 0.0, "pose": 0.0, "up": 0.0}
-        for x, heat_t, pose_t, up_t, mask in loader:
-            x, heat_t, pose_t, up_t, mask = (t.to(device, non_blocking=True) for t in (x, heat_t, pose_t, up_t, mask))
+        for x, heat_t, pose_t, up_t, mask, hard_neg in loader:
+            x, heat_t, pose_t, up_t, mask, hard_neg = (t.to(device, non_blocking=True) for t in (x, heat_t, pose_t, up_t, mask, hard_neg))
             heat, pose, up = model(x)
-            loss, parts = table_detector_loss(heat, pose, up, heat_t, pose_t, up_t, mask, args.pose_weight, args.up_weight)
+            loss, parts = table_detector_loss(heat, pose, up, heat_t, pose_t, up_t, mask, args.pose_weight, args.up_weight, hard_neg)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()

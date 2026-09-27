@@ -789,6 +789,100 @@ uv run python -m cardid.size_density_analysis --checkpoint data/runs/<run>/best.
 uv run python -m cardid.small_card_probe --checkpoint data/runs/<run>/best.pt
 ```
 
+### Real-capture failure modes: clutter, stacking, round-object false positives, gaming lighting
+
+A screenshot from the deployed Super AI feature (a real desk, dark room, pink/purple gaming LED
+lighting) surfaced five gaps synthetic evaluation alone had not caught: low confidence overall
+under that specific dark+colored-cast combination, a false-positive detection box on a round
+non-card object, confused/merged boxes where cards were adjacent or stacked, and two kinds of
+unmodeled desk clutter (headphones, a deck box viewed edge-on) that the renderer had never drawn.
+Fixes, in the same modules described above:
+
+- **RGB-gaming color-cast bias** (`hardware_stress.py`'s `GAMING_HUES`): `apply_color_cast` now
+  draws 70% of its tints near five real LED-peripheral hues (purple/magenta, blue, red/pink,
+  cyan, green) instead of a uniformly random tint, and a new `apply_dark_gaming_cast` composes
+  dark-room + gaming-cast explicitly; `apply_combined` starts from that specific pairing half the
+  time instead of picking 2-3 of six degradations uniformly, since dark+colored-LED is the single
+  most common bad-desk condition, not one combination among many equally likely ones.
+- **Clutter and round hard negatives** (`scene_renderer.clutter_object`, `round_object`, wired
+  into `table_scenes.render_table_scene` via `CLUTTER_RATE`/`ROUND_NEGATIVE_RATE`): irregular
+  blobs and coaster/plate/lid-shaped discs scattered per scene with no ground-truth quad at all,
+  so the heatmap has to learn to stay quiet near them instead of only ever seeing "not a card"
+  in the shape of a die, a finger, or another card (the three `occluders` already covered).
+- **Deliberate card stacking** (`table_scenes.STACK_RATE`): distinct from the existing rare
+  aura/equipment occluder (a small object over one card), this collapses one card's position
+  onto another's so two full cards sit nearly coincident, both individually labelled -- the
+  first pass this checkpoint got measured against it found **0% recall on the fully-covered
+  lower card** (see the confusion matrix below), a much bigger gap than the aura occluder ever
+  exercised.
+- **Real-capture calibration set** (`data/real-captures/<id>/{frame.png,video_crop.png,
+  annotation.json}`): a small, hand-annotated, growing set of actual webcam captures, seeded with
+  the screenshot that started this investigation (5 real cards, plus 5 hand-boxed negatives
+  including the exact round object the deployed model false-positived on). It is far too small
+  to be a reliable recall/precision estimate on its own (n=1 capture as of this writing) but
+  exists to catch a real synthetic-vs-deployment gap the way this one was found -- add more
+  captures over time the same way. `confusion_matrix.py` letterboxes each capture to square
+  (matching the frontend's `letterboxToSquare`, not a plain resize) before scoring, since a
+  non-square crop resized directly onto a square input distorts aspect ratio in a way no
+  synthetic scene, which is square from the start, ever demonstrates.
+
+All three synthetic additions are on by default in every scene rendered from here on (no flag
+needed), so a plain `table_scenes` regeneration of `train`/`val`/`test`/`challenge` picks them up;
+`RENDERER_VERSION` was bumped to `table-scenes-v3` to mark the distribution change (`v4` later
+raised `STACK_RATE` further -- see "Phase 4" below).
+
+### Confusion matrix: one report across every failure mode measured so far
+
+Object detection has one class ("card"), so there is no NxN label-confusion matrix; the useful
+analogue `confusion_matrix.py` prints is a recall/precision/false-positive-on-hard-negative
+breakdown, one row per category, reusing the same greedy IoU-0.5 matching as every other eval
+script here -- instead of running `evaluate_nonstandard.py`, `hardware_stress.py`,
+`size_density_analysis.py`, and `small_card_probe.py` separately and eyeballing four outputs.
+Categories: `baseline`, `size:<bucket>`, `density:<label>`, `nonstandard:<frame category>`,
+`hw:<degradation>` (including the new `dark_gaming_cast`), `stacking:victim/topper/other`,
+`hard_negatives` (false-positive rate on scenes forced to include clutter/round objects), and
+`real_captures` (the hand-annotated set above, when any exist).
+
+```sh
+uv run python -m cardid.confusion_matrix --checkpoint data/runs/<run>/best.pt --scenes-per-category 30
+```
+
+### Phase 4: fine-tuning against the real-capture findings -- a mixed, honestly-reported result
+
+Fine-tuning `table-a-combined` on a freshly-regenerated `table-scenes-v3` train split (20 epochs,
+`--hardware-stress-rate 0.15`, run `table-a-realcapture-hardening`) trained cleanly with no
+divergence (loss 0.269 -> 0.103 monotonically). A same-seed confusion-matrix before/after
+(`--seed 777 --scenes-per-category 40`) showed:
+
+- **Real, broad wins, no regressions**: every `hw:*` category improved (`dark_room` 0.972 ->
+  0.978, `color_cast` 0.978 -> 0.981, `combined` 0.959 -> 0.967), `nonstandard:*` held steady or
+  improved slightly, and `baseline`/`size`/`density` were unchanged.
+- **Stacking barely moved**: `stacking:victim` (the fully-covered lower card) went 0.184 -> 0.263
+  -- directionally right, but still missing 3 in 4 stacked-under cards. `STACK_RATE` at 0.12 over
+  one 20-epoch pass was not enough exposure for a genuinely hard case.
+- **Hard-negative false positives did not improve**: 0.365 -> 0.385 (essentially flat, within
+  noise). The reason is structural, not a data-volume problem: `table_detector_loss`'s heatmap
+  focal loss already treats every non-card pixel as an equally-weighted negative, so a round or
+  clutter object sitting in the background gives the model no *extra* gradient signal to reject
+  that shape specifically -- it is just more background, indistinguishable in the loss from any
+  other background pixel it was already getting right.
+- **The real capture looked worse (0.800 -> 0.600 recall)**, but this is n=5 cards from a single
+  photo -- a one-card difference is a 20-point swing, not a trustworthy signal in either
+  direction. More real captures are needed before this number means anything on its own.
+
+This checkpoint (`table-a-realcapture-hardening`) was exported and pushed as a net improvement
+(broad wins, zero regressions on the core baseline) while the two stagnant metrics -- stacking and
+hard-negative suppression -- were treated as still-open follow-up work rather than blocking the
+ship, since both are genuinely hard problems this single pass was never going to fully solve.
+
+**Follow-up, `table-scenes-v4`**: `STACK_RATE` doubled (0.12 -> 0.25) for more stacking exposure,
+and `table_detector_loss` gained an explicit `hard_neg_mask` parameter (from `build_targets`'
+new `negatives` argument): cells covered by a clutter/round hard-negative object now get their
+false-positive penalty multiplied by `HARD_NEG_WEIGHT` (3x, in `table_detector.py`) instead of
+the plain background weight, which is the structural fix the flat 0.365 -> 0.385 result called
+for. Re-run `confusion_matrix.py` with the same seed against the resulting checkpoint before
+deciding whether to ship it.
+
 ### Exporting the dense detector for the rest of the app
 
 `export_table_detector.py` exports a `TableCenterNet` checkpoint to a standalone ONNX artifact,

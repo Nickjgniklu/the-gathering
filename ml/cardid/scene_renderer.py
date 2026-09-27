@@ -273,6 +273,36 @@ def occluders(canvas: np.ndarray, rng: np.random.Generator, quad: np.ndarray, ca
         cv2.circle(canvas, (int(end[0]), int(end[1])), int(width / 2), tuple(float(v) for v in skin * 0.95), -1, lineType=cv2.LINE_AA)
 
 
+def clutter_object(canvas: np.ndarray, rng: np.random.Generator, center: np.ndarray, scale: float) -> None:
+    """A generic irregular non-card object on the table -- headphones, a tin, a cup, a coiled
+    cable -- drawn as a soft-edged asymmetric blob so the model sees plenty of "not a card"
+    shapes near cards, not just the four kinds of thing `occluders` already draws (another
+    card, dice, a finger). No ground-truth quad is ever recorded for this: it exists purely so
+    the heatmap learns to stay quiet here, the same real-desk clutter that produced a false
+    positive on a round object in a live capture (see `ml/README.md`)."""
+    n = int(rng.integers(5, 9))
+    angles = np.sort(rng.uniform(0, 2 * np.pi, n))
+    radii = scale * rng.uniform(0.5, 1.15, n)
+    pts = (center + np.stack([np.cos(angles), np.sin(angles) * rng.uniform(0.6, 1.3)], axis=1) * radii[:, None]).astype(np.int32)
+    color = tuple(float(v) for v in rng.uniform(20, 210, size=3))
+    mask = np.zeros(canvas.shape[:2], np.uint8)
+    cv2.fillPoly(mask, [pts], 255, lineType=cv2.LINE_AA)
+    sigma = scale * rng.uniform(0.04, 0.1)
+    soft = cv2.GaussianBlur(mask.astype(np.float32) / 255.0, (0, 0), sigma)
+    canvas += (np.float32(color) - canvas) * soft[..., None]
+
+
+def round_object(canvas: np.ndarray, rng: np.random.Generator, center: np.ndarray, radius: float) -> None:
+    """A round tabletop object -- a coaster, plate, lid, or coin -- the commonest shape a
+    corner-based card detector can mistake for a rotated card at a glance. Trained as an
+    explicit hard negative (no ground-truth quad) for the same reason as `clutter_object`."""
+    color = tuple(float(v) for v in rng.uniform(15, 235, size=3))
+    cv2.circle(canvas, (int(center[0]), int(center[1])), int(radius), color, -1, lineType=cv2.LINE_AA)
+    if rng.random() < 0.6:  # a rim or pattern ring, so it is not always a flat disc
+        ring_color = tuple(float(v) for v in np.clip(np.float32(color) * rng.uniform(0.5, 1.5), 0, 255))
+        cv2.circle(canvas, (int(center[0]), int(center[1])), int(radius * rng.uniform(0.5, 0.85)), ring_color, max(1, int(radius * 0.08)), lineType=cv2.LINE_AA)
+
+
 def photometrics(img: np.ndarray, rng: np.random.Generator, scale: float = DET_INPUT / SCENE, severity: float = 1.0) -> np.ndarray:
     """Webcam look: exposure, white balance, gamma, saturation, defocus, sensor noise, and
     the stream's compression. Applied at detector-input resolution, so blur and noise are

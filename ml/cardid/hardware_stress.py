@@ -35,12 +35,41 @@ def apply_dark_room(image: np.ndarray, rng: np.random.Generator) -> np.ndarray:
     return np.clip(x, 0, 255).astype(np.uint8)
 
 
+# RGB-gaming-peripheral hues (purple/magenta, blue, red/pink, cyan, green) as (R, G, B) tint
+# targets: a real capture from the deployed feature showed exactly this kind of ambient LED
+# lighting (a pink/purple cast across the whole desk), which a uniformly-random tint under-covers
+# -- most of the (0.5, 1.6) cube is a color no LED strip or keyboard actually produces.
+GAMING_HUES = np.float32(
+    [
+        [1.5, 0.6, 1.6],  # purple/magenta
+        [0.6, 0.7, 1.7],  # blue
+        [1.7, 0.5, 0.9],  # red/pink
+        [0.5, 1.4, 1.5],  # cyan
+        [0.6, 1.7, 0.7],  # green
+    ]
+)
+
+
 def apply_color_cast(image: np.ndarray, rng: np.random.Generator) -> np.ndarray:
     """Strong colored ambient light (RGB room lighting, a monitor's glow, a colored LED strip)
-    -- a much larger per-channel tint than photometrics' ordinary white-balance jitter."""
-    tint = rng.uniform(0.5, 1.6, size=3).astype(np.float32)
+    -- a much larger per-channel tint than photometrics' ordinary white-balance jitter. Mostly
+    drawn near a gaming-peripheral hue (see `GAMING_HUES`), since that is what real desks
+    actually show, with some fully-random tints kept for generality."""
+    if rng.random() < 0.7:
+        base = GAMING_HUES[int(rng.integers(len(GAMING_HUES)))]
+        tint = base * rng.uniform(0.85, 1.15, size=3).astype(np.float32)
+    else:
+        tint = rng.uniform(0.5, 1.6, size=3).astype(np.float32)
     tint *= 3.0 / tint.sum()  # keep overall brightness roughly stable; only the balance shifts
     return np.clip(image.astype(np.float32) * tint, 0, 255).astype(np.uint8)
+
+
+def apply_dark_gaming_cast(image: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+    """Dark room *and* a gaming-peripheral color cast together, not just two of five random
+    degradations that happen to land on both -- this specific combination (a dim room lit mostly
+    by RGB LEDs) is the single most common real-desk condition and was previously only
+    ~1/C(5,2)-ish likely to co-occur under `apply_combined`'s uniform pick."""
+    return apply_dark_room(apply_color_cast(image, rng), rng)
 
 
 def apply_vignette(image: np.ndarray, rng: np.random.Generator) -> np.ndarray:
@@ -86,6 +115,7 @@ def apply_desk_reflection(image: np.ndarray, rng: np.random.Generator) -> np.nda
 DEGRADATIONS = {
     "dark_room": apply_dark_room,
     "color_cast": apply_color_cast,
+    "dark_gaming_cast": apply_dark_gaming_cast,
     "vignette": apply_vignette,
     "chromatic_aberration": apply_chromatic_aberration,
     "desk_reflection": apply_desk_reflection,
@@ -93,7 +123,16 @@ DEGRADATIONS = {
 
 
 def apply_combined(image: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-    """2-3 degradations stacked, like a genuinely bad cheap webcam in a messy room."""
+    """2-3 degradations stacked, like a genuinely bad cheap webcam in a messy room. Half the
+    time starts from the dark+gaming-cast combo (the real-capture-motivated worst case) and
+    layers 0-1 more effects on top, instead of picking uniformly from all five/six and under-
+    sampling that specific co-occurrence."""
+    if rng.random() < 0.5:
+        image = apply_dark_gaming_cast(image, rng)
+        extra = [n for n in DEGRADATIONS if n not in ("dark_room", "color_cast", "dark_gaming_cast")]
+        for name in rng.choice(extra, size=int(rng.integers(0, 2)), replace=False):
+            image = DEGRADATIONS[name](image, rng)
+        return image
     names = rng.choice(list(DEGRADATIONS), size=int(rng.integers(2, 4)), replace=False)
     for name in names:
         image = DEGRADATIONS[name](image, rng)

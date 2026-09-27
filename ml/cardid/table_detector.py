@@ -80,17 +80,25 @@ class TableCenterNet(nn.Module):
 
 
 def build_targets(
-    poses: list[tuple[float, float, float, float]], ups: list[np.ndarray], image_size: int, stride: int
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    poses: list[tuple[float, float, float, float]],
+    ups: list[np.ndarray],
+    image_size: int,
+    stride: int,
+    negatives: list[tuple[float, float, float, float]] | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """`poses` are (cx, cy, short, angle_deg) in input-image pixels, `ups` the matching unit
-    vectors. Returns (heat, pose, up, mask), each float32 and channel-first, at `image_size /
-    stride` resolution. Cell `i`'s centre sits at pixel `(i + 0.5) * stride` (matches
-    `decode_detections`'s inverse mapping)."""
+    vectors. Returns (heat, pose, up, mask, hard_neg), each float32 and channel-first, at
+    `image_size / stride` resolution. Cell `i`'s centre sits at pixel `(i + 0.5) * stride`
+    (matches `decode_detections`'s inverse mapping). `negatives`, when given, are (x0, y0, x1,
+    y1) hard-negative object boxes (clutter/round objects with no card there at all, see
+    `table_scenes.py`); `hard_neg` marks the cells whose centre falls inside one, for
+    `table_detector_loss` to penalise a false activation there more than over plain background."""
     size = image_size // stride
     heat = np.zeros((1, size, size), np.float32)
     pose = np.zeros((3, size, size), np.float32)
     up = np.zeros((2, size, size), np.float32)
     mask = np.zeros((1, size, size), np.float32)
+    hard_neg = np.zeros((1, size, size), np.float32)
     grid = np.arange(size, dtype=np.float32) + 0.5
     for (cx, cy, short, angle), up_vec in zip(poses, ups, strict=True):
         gx, gy = cx / stride, cy / stride
@@ -104,7 +112,15 @@ def build_targets(
         pose[:, cyi, cxi] = (np.log(max(short, 1e-3)), np.cos(2 * t), np.sin(2 * t))
         up[:, cyi, cxi] = up_vec
         mask[0, cyi, cxi] = 1.0
-    return heat, pose, up, mask
+    for x0, y0, x1, y1 in negatives or []:
+        gx0, gx1 = int(np.clip(np.floor(x0 / stride), 0, size - 1)), int(np.clip(np.ceil(x1 / stride), 0, size - 1))
+        gy0, gy1 = int(np.clip(np.floor(y0 / stride), 0, size - 1)), int(np.clip(np.ceil(y1 / stride), 0, size - 1))
+        hard_neg[0, gy0 : gy1 + 1, gx0 : gx1 + 1] = 1.0
+    return heat, pose, up, mask, hard_neg
+
+
+HARD_NEG_WEIGHT = 3.0  # how much harder a false activation over a clutter/round object is
+# penalised than over plain background (see `detector.heat_loss`'s `neg_weight`)
 
 
 def table_detector_loss(
@@ -117,10 +133,15 @@ def table_detector_loss(
     mask: torch.Tensor,
     pose_weight: float = 1.0,
     up_weight: float = 1.0,
+    hard_neg_mask: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, dict[str, float]]:
-    """Focal loss on every cell's heatmap plus pose/up regression masked to instance centres."""
+    """Focal loss on every cell's heatmap plus pose/up regression masked to instance centres.
+    `hard_neg_mask`, when given, upweights the heatmap's background penalty by `HARD_NEG_WEIGHT`
+    over clutter/round-object cells (see `table_scenes.py`'s hard negatives and
+    `build_targets`)."""
     n_pos = mask.sum().clamp(min=1)
-    hl = heat_loss(heat_logits, heat_target)
+    neg_weight = 1 + (HARD_NEG_WEIGHT - 1) * hard_neg_mask if hard_neg_mask is not None else None
+    hl = heat_loss(heat_logits, heat_target, neg_weight=neg_weight)
     size_l = ((pose[:, :1] - pose_target[:, :1]).abs() * mask).sum() / n_pos
     angle_l = (((pose[:, 1:] - pose_target[:, 1:]) ** 2).sum(dim=1, keepdim=True) * mask).sum() / n_pos
     pose_l = size_l + 0.5 * angle_l

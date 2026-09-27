@@ -23,6 +23,8 @@ from .table_detector import TABLE_INPUT, TABLE_STRIDE, build_targets
 # Found by `hardware_stress.py`: dark rooms and stacked degradations cost 25-30 points of
 # recall while individual lens/lighting artifacts (vignette, chromatic aberration, colour
 # cast) cost nothing, so only those two are worth the training-time cost of augmenting for.
+# `apply_combined` itself now leans heavily on the dark+gaming-color-cast combo (see
+# `hardware_stress.py`), so no separate entry is needed here for that specific case.
 HARDWARE_AUGMENTATIONS = (apply_dark_room, apply_combined)
 
 
@@ -46,7 +48,7 @@ class TableSceneDetectionDataset(Dataset):
     def __len__(self) -> int:
         return len(self.rows)
 
-    def __getitem__(self, i: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __getitem__(self, i: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         row = self.rows[i]
         path = self.root / row["image"]
         raw = cv2.imread(str(path))
@@ -64,5 +66,13 @@ class TableSceneDetectionDataset(Dataset):
             pose, up = card_pose_and_up(np.float32(card["quad"]) * scale)
             poses.append(pose)
             ups.append(up)
-        heat, pose_t, up_t, mask = build_targets(poses, ups, self.input_size, self.stride)
-        return to_tensor(image), torch.from_numpy(heat), torch.from_numpy(pose_t), torch.from_numpy(up_t), torch.from_numpy(mask)
+        negatives = [tuple(v * scale for v in n["bbox"]) for n in row.get("negatives", [])]
+        heat, pose_t, up_t, mask, hard_neg = build_targets(poses, ups, self.input_size, self.stride, negatives)
+        return (
+            to_tensor(image),
+            torch.from_numpy(heat),
+            torch.from_numpy(pose_t),
+            torch.from_numpy(up_t),
+            torch.from_numpy(mask),
+            torch.from_numpy(hard_neg),
+        )

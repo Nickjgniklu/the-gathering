@@ -174,11 +174,13 @@ class RenderTableSceneTest(unittest.TestCase):
         self.assertEqual(len(record["cards"]), 5)
 
     def test_cards_never_overlap_regardless_of_setup_or_density(self):
+        # stack_rate=0: this is the grid layout's own non-overlap invariant, not the separate
+        # deliberate-stacking feature (see StackingTest below), which intentionally overlaps.
         from .scene_geometry import quad_iou
 
         for setup in table_scenes.SETUPS:
             with self.subTest(setup=setup):
-                _, record = table_scenes.render_table_scene(1, self.cards, self.arts, setup, "overhead_1080p", count=8, size=1280, out=256)
+                _, record = table_scenes.render_table_scene(1, self.cards, self.arts, setup, "overhead_1080p", count=8, size=1280, out=256, stack_rate=0.0)
                 quads = [np.float32(c["quad"]) for c in record["cards"]]
                 for i, a in enumerate(quads):
                     for b in quads[i + 1 :]:
@@ -190,7 +192,9 @@ class RenderTableSceneTest(unittest.TestCase):
         from .scene_geometry import quad_iou
 
         for seed in range(20):
-            _, record = table_scenes.render_table_scene(seed, self.cards, self.arts, "duel", "closeup_4k", count=len(self.cards), size=1280, out=256)
+            _, record = table_scenes.render_table_scene(
+                seed, self.cards, self.arts, "duel", "closeup_4k", count=len(self.cards), size=1280, out=256, stack_rate=0.0
+            )
             quads = [np.float32(c["quad"]) for c in record["cards"]]
             for i, a in enumerate(quads):
                 for b in quads[i + 1 :]:
@@ -210,7 +214,9 @@ class RenderTableSceneTest(unittest.TestCase):
         # Two cards at the same pose (short=60 native px -> 30 output px, above the
         # identifiable-size floor): the earlier one is entirely covered by the later one.
         with patch.object(table_scenes, "_poses", return_value=[(100, 100, 60, 0), (100, 100, 60, 0)]):
-            _, record = table_scenes.render_table_scene(7, self.cards, self.arts, "spread", count=2, size=256, out=128)
+            _, record = table_scenes.render_table_scene(
+                7, self.cards, self.arts, "spread", count=2, size=256, out=128, stack_rate=0.0, clutter_rate=0.0, round_negative_rate=0.0
+            )
         first, second = record["cards"]
         self.assertGreater(first["occluded_fraction"], 0.9)
         self.assertFalse(first["identifiable"])
@@ -224,6 +230,23 @@ class RenderTableSceneTest(unittest.TestCase):
 
         self.assertLess(quad_short(np.float32(card["quad"])), table_scenes.IDENTIFIABLE_MIN_SHORT_PX)
         self.assertFalse(card["identifiable"])
+
+    def test_stack_rate_zero_never_reports_a_stacked_pair(self):
+        for seed in range(10):
+            _, record = table_scenes.render_table_scene(seed, self.cards, self.arts, "lanes", count=6, size=1280, out=256, stack_rate=0.0)
+            self.assertIsNone(record["stacked_pair"])
+
+    def test_stack_rate_one_forces_a_heavily_occluded_pair(self):
+        _, record = table_scenes.render_table_scene(1, self.cards, self.arts, "lanes", count=6, size=1280, out=256, stack_rate=1.0)
+        victim, topper = record["stacked_pair"]
+        self.assertGreater(record["cards"][victim]["occluded_fraction"], 0.5)
+        self.assertEqual(record["cards"][topper]["occluded_fraction"], 0.0)
+
+    def test_clutter_and_round_negatives_carry_no_card_ground_truth(self):
+        _, record = table_scenes.render_table_scene(2, self.cards, self.arts, "lanes", count=4, size=1280, out=256, clutter_rate=1.0, round_negative_rate=1.0)
+        kinds = {n["kind"] for n in record["negatives"]}
+        self.assertEqual(kinds, {"clutter", "round_object"})
+        self.assertEqual(len(record["cards"]), 4)  # negatives never become (or displace) a card
 
 
 class WriteDatasetTest(unittest.TestCase):

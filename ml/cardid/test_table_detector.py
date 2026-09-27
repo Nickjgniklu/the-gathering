@@ -39,7 +39,7 @@ class TableCenterNetTest(unittest.TestCase):
 
 class BuildTargetsTest(unittest.TestCase):
     def test_single_card_marks_its_nearest_cell_and_no_other(self):
-        heat, pose, up, mask = build_targets([(100.0, 100.0, 60.0, 0.0)], [np.float32([0, -1])], image_size=256, stride=4)
+        heat, pose, up, mask, _hard_neg = build_targets([(100.0, 100.0, 60.0, 0.0)], [np.float32([0, -1])], image_size=256, stride=4)
         self.assertEqual(mask.sum(), 1.0)
         cy, cx = 24, 24  # cell (i+0.5)*4 = 100 -> i = round(25.0-0.5) = round(24.5) = 24
         self.assertEqual(mask[0, cy, cx], 1.0)
@@ -48,23 +48,30 @@ class BuildTargetsTest(unittest.TestCase):
         self.assertGreater(heat[0, cy, cx], 0.99)
 
     def test_heatmap_falls_off_away_from_the_centre_but_stays_within_bounds(self):
-        heat, _pose, _up, _mask = build_targets([(32.0, 32.0, 20.0, 0.0)], [np.float32([0, -1])], image_size=64, stride=4)
+        heat, _pose, _up, _mask, _hard_neg = build_targets([(32.0, 32.0, 20.0, 0.0)], [np.float32([0, -1])], image_size=64, stride=4)
         self.assertTrue((heat >= 0).all() and (heat <= 1).all())
         self.assertLess(heat[0, 0, 0], heat[0, 8, 8])  # far corner is cooler than the centre cell
 
     def test_no_cards_gives_all_zero_targets(self):
-        heat, pose, up, mask = build_targets([], [], image_size=64, stride=4)
+        heat, pose, up, mask, hard_neg = build_targets([], [], image_size=64, stride=4)
         self.assertEqual(heat.sum(), 0.0)
         self.assertEqual(pose.sum(), 0.0)
         self.assertEqual(up.sum(), 0.0)
         self.assertEqual(mask.sum(), 0.0)
+        self.assertEqual(hard_neg.sum(), 0.0)
+
+    def test_negative_box_marks_covered_cells_as_hard_negative(self):
+        _heat, _pose, _up, _mask, hard_neg = build_targets([], [], image_size=64, stride=4, negatives=[(20.0, 20.0, 28.0, 28.0)])
+        self.assertGreater(hard_neg.sum(), 0.0)
+        self.assertEqual(hard_neg[0, 5, 5], 1.0)  # cell (5+0.5)*4 = 22, inside [20, 28]
+        self.assertEqual(hard_neg[0, 0, 0], 0.0)
 
 
 class TableDetectorLossTest(unittest.TestCase):
     def test_perfect_prediction_gives_near_zero_pose_and_up_loss(self):
         # Off-grid coordinates (not exactly halfway between cells) so the normalised Gaussian
         # has one unambiguous peak cell instead of a tie between several equidistant ones.
-        heat, pose, up, mask = build_targets([(33.4, 29.7, 20.0, 15.0)], [np.float32([0.3, -0.9])], image_size=64, stride=4)
+        heat, pose, up, mask, _hard_neg = build_targets([(33.4, 29.7, 20.0, 15.0)], [np.float32([0.3, -0.9])], image_size=64, stride=4)
         t = lambda a: torch.from_numpy(a)[None]  # noqa: E731
         heat_logits = torch.full_like(t(heat), -10.0)
         cy, cx = np.argwhere(mask[0] == 1.0)[0]
@@ -75,7 +82,7 @@ class TableDetectorLossTest(unittest.TestCase):
         self.assertLess(float(loss), 0.1)
 
     def test_wrong_prediction_costs_more_than_correct(self):
-        heat, pose, up, mask = build_targets([(32.0, 32.0, 20.0, 0.0)], [np.float32([0, -1])], image_size=64, stride=4)
+        heat, pose, up, mask, _hard_neg = build_targets([(32.0, 32.0, 20.0, 0.0)], [np.float32([0, -1])], image_size=64, stride=4)
         t = lambda a: torch.from_numpy(a)[None]  # noqa: E731
         heat_logits = torch.zeros_like(t(heat))
         good, _ = table_detector_loss(heat_logits, t(pose), t(up), t(heat), t(pose), t(up), t(mask))
