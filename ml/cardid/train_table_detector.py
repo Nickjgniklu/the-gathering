@@ -85,6 +85,12 @@ def main() -> None:
     parser.add_argument("--val-limit", type=int, default=60, help="val scenes scored per epoch")
     parser.add_argument("--score-threshold", type=float, default=0.3)
     parser.add_argument(
+        "--hardware-stress-rate",
+        type=float,
+        default=0.0,
+        help="fraction of training scenes augmented with a bad-webcam degradation (dark room or a stacked combo); see hardware_stress.py",
+    )
+    parser.add_argument(
         "--resume", help="warm-start from a checkpoint's model weights only; optimizer/schedule/epoch/history all restart (see module docstring)"
     )
     add_runtime_args(parser, "dataset-loading worker processes")
@@ -102,7 +108,7 @@ def main() -> None:
     val_rows = load_scenes(args.manifest_dir / "val" / "manifest.jsonl", "val")
     if not train_rows:
         raise SystemExit(f"no train scenes in {args.manifest_dir}")
-    train_set = TableSceneDetectionDataset(train_rows, args.manifest_dir / "train", args.input_size, TABLE_STRIDE)
+    train_set = TableSceneDetectionDataset(train_rows, args.manifest_dir / "train", args.input_size, TABLE_STRIDE, args.hardware_stress_rate)
     loader = make_loader(train_set, args.batch, runtime)
     print(f"train: {len(train_rows)} scenes, {len(loader)} batches/epoch; val: {len(val_rows)} scenes ({args.val_limit} scored/epoch)")
 
