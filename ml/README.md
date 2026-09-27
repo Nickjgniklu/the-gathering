@@ -902,6 +902,39 @@ recovered real-capture number were judged worth the broad recall dip. If this tr
 to matter in practice, the next thing to try is a lower `HARD_NEG_WEIGHT` (~1.5-2x) for most of
 the false-positive reduction at less recall cost, re-verified the same way before shipping again.
 
+### Phase 5: real desk-clutter crops close most of the real-world precision gap
+
+The 108-card golden dataset made the actual size of the sim-to-real gap unmistakable:
+`table-a-hardneg-v4` scored 92.6% recall but only **75.8% precision** and a **22.2%
+false-positive rate on known hard-negative regions** on real photos, far below every synthetic
+number. The cause was visual, not a training-signal problem: `clutter_object`/`round_object`
+(the procedural hard negatives `table-a-hardneg-v4` trained against) are flat-colour polygons and
+plain circles -- nothing like the actual dice, deck box, mouse, or keyboard fooling the model in
+practice.
+
+`real_clutter.py` pastes real crops cut from a clean-desk reference photo (dice, a deck box, a
+mouse, a keyboard corner, headphones, a ThermoFlask, squishy toys, a phone dock -- see
+`data/real-clutter-crops/`) into synthetic scenes instead, with random rotation/scale/colour
+jitter and a feathered alpha so they blend rather than leaving a hard seam
+(`table_scenes.REAL_CLUTTER_RATE`, alongside the existing procedural clutter, not replacing it;
+renderer bumped to v5). Fine-tuning `table-a-hardneg-v4` for 20 epochs on data regenerated with
+this (run `table-a-realclutter-v5`) trained cleanly (no divergence) and, per the same same-seed
+confusion-matrix comparison used throughout:
+
+- **`real_captures` precision: 75.8% -> 87.4%** (+11.6 points) and **false-positive rate on known
+  negatives: 22.2% -> 18.5%** -- the real-world gap this whole investigation was chasing, closed
+  by more than a third.
+- **`real_captures` recall: 92.6% -> 89.8%**, a small trade-off for that precision gain.
+- Every synthetic category (`baseline`, `size`, `density`, `nonstandard:*`, `hw:*`) moved by
+  under a point either way -- noise, not a regression.
+- `stacking:victim` continued its slow climb (0.289 -> 0.368) as a side effect of continued
+  training; still weak, still an open problem.
+
+Per-capture: 6 of the 12 real photos now score perfect 100% precision (up from a handful before);
+the remaining false positives concentrate in the same 3 captures (`001`, `002`, `011`) that were
+already the noisiest going in. Exported and pushed as `table-a-realclutter-v5`, the current
+shipped checkpoint.
+
 ### Exporting the dense detector for the rest of the app
 
 `export_table_detector.py` exports a `TableCenterNet` checkpoint to a standalone ONNX artifact,
