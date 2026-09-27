@@ -713,9 +713,9 @@ run reached only 78% recall / 99.5% precision after 63 epochs, against the pretr
 from-scratch variant is no longer supported here. None of this identifies cards: that needs a
 trained `ArtIndex` embedding model this tooling does not have.
 
-### Two-phase training: unbalanced, then oversampled for non-standard frames
+### Multi-phase training: unbalanced, then oversampled, then hardware-stressed
 
-The shipped checkpoint was trained in two phases, not one run:
+The shipped checkpoint was trained in successive phases, not one run:
 
 1. **Phase 1 (unbalanced).** `table-a-pretrained-gpu`, 120 epochs on the natural card
    distribution (`data/cards` sampled randomly from the catalog, ~88% ordinary black-bordered
@@ -741,6 +741,21 @@ The lesson worth keeping: a category-specific weakness can hide inside a strong-
 metric when the category is rare in both training and evaluation data. `nonstandard_cards.py`
 downloads a dedicated, deliberately-not-random sample per category precisely so evaluation does
 not inherit the same skew as the training set it is trying to check.
+
+3. **Phase 3 (hardware-stressed).** `hardware_stress.py` found lens/lighting artifacts
+   (vignette, chromatic aberration, colour cast) cost nothing (99.0% recall, same as clean), but
+   genuinely dark rooms cost 31 points (67.7%) and a stack of 2-3 degradations cost 25 (74.5%).
+   Fine-tuned from phase 2's checkpoint with `--hardware-stress-rate 0.25` (a quarter of training
+   scenes augmented with the same dark-room/combined functions), which closed the gap to 97.4%
+   and 99.0% respectively -- but training destabilised after epoch 17 (loss_heat climbing from
+   0.022 to 0.431 over 4 epochs, recall collapsing to 68.5%), so the run was stopped there rather
+   than let it keep degrading; `best.pt`'s score-gated checkpoint selection meant epoch 17's good
+   weights were never overwritten by the divergence. The shipped checkpoint is that epoch, not a
+   full 25-epoch run -- worth retrying at a lower rate (~0.15) if pushing this further.
+
+`table_scene_dataset.py`'s `--hardware-stress-rate` reuses `hardware_stress.py`'s degradation
+functions directly rather than duplicating them, so the same functions serve both evaluation and
+training-time augmentation.
 
 ```sh
 uv run python -m cardid.nonstandard_cards download --per-category 40
