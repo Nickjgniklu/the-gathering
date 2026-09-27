@@ -33,7 +33,10 @@ meant for Git (see the `--out` default and `ml/README.md`).
 A scene can also carry clutter blobs and round objects (`scene_renderer.clutter_object`,
 `round_object`) as unlabelled hard negatives, and, rarely, a deliberate 2-card stack
 (`STACK_RATE`) -- all three added after a real deployed-feature capture showed unmodeled desk
-clutter and a false positive on a round object (see `ml/README.md`).
+clutter and a false positive on a round object (see `ml/README.md`). A 108-card real-capture
+golden dataset later found those procedural shapes did not close the real-world false-positive
+gap, so `real_clutter.real_clutter_object` pastes actual photographed desk-clutter crops
+(dice, a deck box, a mouse, a keyboard, headphones) instead (`REAL_CLUTTER_RATE`).
 """
 
 from __future__ import annotations
@@ -51,6 +54,7 @@ import numpy as np
 
 from .constants import CARD_ASPECT
 from .image_bank import ArtBank, CardBank, list_arts
+from .real_clutter import real_clutter_object
 from .scene_geometry import quad_bbox, quad_from_pose, quad_short
 from .scene_renderer import background, clutter_object, draw_card, draw_sleeve_ring, draw_toploader, gloss, occluders, photometrics, round_object
 
@@ -63,7 +67,7 @@ from .scene_renderer import background, clutter_object, draw_card, draw_sleeve_r
 FOOTPRINT_MARGIN = 1.25
 CELL_JITTER = 0.06
 
-RENDERER_VERSION = "table-scenes-v4"  # v3 added clutter/round hard negatives and stacking; v4 raises STACK_RATE
+RENDERER_VERSION = "table-scenes-v5"  # v3 clutter/round negatives + stacking; v4 raises STACK_RATE; v5 adds real_clutter_object
 
 # Spatial arrangements, each a non-overlapping grid over a different region/shape:
 # "lanes" packs a tidy contiguous block; "spread" scatters the same grid's cells with gaps;
@@ -126,6 +130,11 @@ OCCLUDER_RATE = 0.2  # baseline chance an *individual* card gets a nearby die/fi
 # whole cards nearly coincident, both individually labelled).
 CLUTTER_RATE = 0.35  # chance a scene gets 1-2 clutter blobs
 ROUND_NEGATIVE_RATE = 0.25  # chance a scene gets 1 round hard-negative object
+# A 108-card real-capture golden dataset found the procedural blobs above did not close the real
+# false-positive gap (75.8% precision, 22.2% FP rate on real clutter): real dice/deck-box/mouse/
+# keyboard textures look nothing like a flat-colour polygon or plain circle. real_clutter_object
+# pastes actual photographed crops instead; see real_clutter.py.
+REAL_CLUTTER_RATE = 0.35  # chance a scene gets 1-2 real clutter crops, independent of CLUTTER_RATE
 # 0.12 (v3) only brought stacked-card recall from 18% to 26% over one fine-tune -- clearly not
 # enough exposure for a genuinely hard case; doubled for v4 alongside the new hard-negative loss
 # upweighting (see table_detector.HARD_NEG_WEIGHT) that targets the other stagnant metric.
@@ -231,6 +240,7 @@ def render_table_scene(
     stack_rate: float = STACK_RATE,
     clutter_rate: float = CLUTTER_RATE,
     round_negative_rate: float = ROUND_NEGATIVE_RATE,
+    real_clutter_rate: float = REAL_CLUTTER_RATE,
 ) -> tuple[np.ndarray, dict]:
     """Render one seeded scene and return RGB pixels plus a portable manifest record."""
     if setup not in SETUPS:
@@ -289,6 +299,11 @@ def render_table_scene(
         center, radius = rng.uniform(0, size, size=2), size * rng.uniform(0.03, 0.08)
         round_object(canvas, rng, center, radius)
         negatives.append({"kind": "round_object", "bbox": [*(center - radius), *(center + radius)]})
+    if real_clutter_rate > 0 and rng.random() < real_clutter_rate:
+        for _ in range(int(rng.integers(1, 3))):
+            center, long_side = rng.uniform(0, size, size=2), size * rng.uniform(0.08, 0.2)
+            real_clutter_object(canvas, rng, center, long_side)
+            negatives.append({"kind": "real_clutter", "bbox": [*(center - long_side * 0.7), *(center + long_side * 0.7)]})
     records = []
     for i, (index, quad, mask) in enumerate(zip(indices, quads, masks, strict=True)):
         later = np.logical_or.reduce(masks[i + 1 :]) if i + 1 < placed else np.zeros_like(mask)

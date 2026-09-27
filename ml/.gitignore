@@ -1,9 +1,11 @@
-# small, hand-annotated real-webcam calibration captures are worth keeping in git, unlike the
-# rest of data/ (generated scenes, downloaded card images, checkpoints/exports), so this excludes
-# data/'s direct children individually instead of the whole tree -- a bare `data/` rule would
-# make `!data/real-captures/` below unable to re-include anything under it.
+# small, hand-annotated real-webcam calibration captures and the real desk-clutter crops cut
+# from them are worth keeping in git, unlike the rest of data/ (generated scenes, downloaded
+# card images, checkpoints/exports), so this excludes data/'s direct children individually
+# instead of the whole tree -- a bare `data/` rule would make the `!` rules below unable to
+# re-include anything under them.
 data/*
 !data/real-captures/
+!data/real-clutter-crops/
 .venv/
 __pycache__/
 *.egg-info/
