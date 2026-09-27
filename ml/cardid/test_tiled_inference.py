@@ -35,12 +35,17 @@ class TileBoxesTest(unittest.TestCase):
 
 
 class DedupeTest(unittest.TestCase):
-    def test_two_overlapping_detections_of_the_same_card_keep_only_the_higher_score(self):
+    def test_two_overlapping_detections_of_the_same_card_merge_into_one_reporting_the_top_score(self):
         quad_a = np.float32([[0, 0], [10, 0], [10, 10], [0, 10]])
         quad_b = np.float32([[1, 1], [11, 1], [11, 11], [1, 11]])  # near-identical box, high IoU
         kept = dedupe([(quad_a, 0.6), (quad_b, 0.9)], iou_threshold=0.4)
         self.assertEqual(len(kept), 1)
-        self.assertEqual(kept[0][1], 0.9)
+        self.assertAlmostEqual(kept[0][1], 0.9, places=5)
+        # the merged quad is a score-weighted average, not either raw input, so it should land
+        # strictly between the two (closer to b, the higher-weighted one) on every corner
+        merged = kept[0][0]
+        self.assertTrue(np.all(merged > quad_a))
+        self.assertTrue(np.all(merged < quad_b))
 
     def test_two_far_apart_detections_are_both_kept(self):
         quad_a = np.float32([[0, 0], [10, 0], [10, 10], [0, 10]])

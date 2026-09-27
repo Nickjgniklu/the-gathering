@@ -47,13 +47,29 @@ def tile_boxes(width: float, height: float, grid: tuple[int, int], overlap: floa
 
 
 def dedupe(detections: list[tuple[np.ndarray, float]], iou_threshold: float = 0.4) -> list[tuple[np.ndarray, float]]:
-    """Greedy NMS by score: the same card detected in two overlapping tiles keeps only its
-    highest-scoring box."""
+    """Greedy clustering by score: group detections whose IoU with the cluster's seed (its
+    highest-scoring member) exceeds `iou_threshold`, then replace each cluster with a single
+    score-weighted average of its quads (not just the seed's own raw one). The same physical
+    card seen from a whole-frame pass and one or more tiles rarely gets *identical* quads --
+    each view's downsample/crop introduces its own small localisation error -- so averaging
+    typically lands closer to the true corners than any single view's estimate, which matters
+    right at the IoU-0.5 pass/fail boundary this project's evaluation uses everywhere."""
     ordered = sorted(detections, key=lambda d: d[1], reverse=True)
+    used = [False] * len(ordered)
     kept: list[tuple[np.ndarray, float]] = []
-    for quad, score in ordered:
-        if not any(quad_iou(quad, k) > iou_threshold for k, _ in kept):
-            kept.append((quad, score))
+    for i, (seed_quad, seed_score) in enumerate(ordered):
+        if used[i]:
+            continue
+        used[i] = True
+        cluster = [(seed_quad, seed_score)]
+        for j in range(i + 1, len(ordered)):
+            if not used[j] and quad_iou(seed_quad, ordered[j][0]) > iou_threshold:
+                used[j] = True
+                cluster.append(ordered[j])
+        weights = np.float32([s for _, s in cluster])
+        quads = np.stack([q for q, _ in cluster])
+        avg_quad = (quads * weights[:, None, None]).sum(axis=0) / weights.sum()
+        kept.append((avg_quad, float(weights.max())))
     return kept
 
 
