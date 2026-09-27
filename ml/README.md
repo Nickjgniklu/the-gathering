@@ -880,8 +880,27 @@ and `table_detector_loss` gained an explicit `hard_neg_mask` parameter (from `bu
 new `negatives` argument): cells covered by a clutter/round hard-negative object now get their
 false-positive penalty multiplied by `HARD_NEG_WEIGHT` (3x, in `table_detector.py`) instead of
 the plain background weight, which is the structural fix the flat 0.365 -> 0.385 result called
-for. Re-run `confusion_matrix.py` with the same seed against the resulting checkpoint before
-deciding whether to ship it.
+for.
+
+Fine-tuning again from `table-a-realcapture-hardening` (run `table-a-hardneg-v4`, same 20 epochs,
+clean convergence, no divergence) produced a genuine trade-off rather than a clean win, per a
+same-seed confusion-matrix comparison:
+
+- **The two targeted metrics improved**: `hard_negatives` false-positive rate 0.385 -> 0.301
+  (~22% relative reduction -- the loss upweight is working), `real_captures` recall bounced back
+  0.600 -> 0.800, `stacking:victim` 0.263 -> 0.289 (modest, despite doubling `STACK_RATE`).
+- **Nearly everything else regressed 1.5-3 points of recall**: `baseline` 0.984 -> 0.972, every
+  `size`/`density`/`nonstandard`/`hw:*` category down by a similar margin, while precision stayed
+  flat or improved slightly across the board. `HARD_NEG_WEIGHT=3.0` most likely leaked past the
+  hard-negative cells it targets: clutter/round objects appear in over half of training scenes
+  (`CLUTTER_RATE` + `ROUND_NEGATIVE_RATE`), so that extra background penalty pushes gradients
+  through the shared backbone often enough to make the whole model modestly more conservative,
+  not just at hard-negative locations specifically.
+
+Shipped anyway (`table-a-hardneg-v4`, exported and pushed): better hard-negative rejection and a
+recovered real-capture number were judged worth the broad recall dip. If this trade-off turns out
+to matter in practice, the next thing to try is a lower `HARD_NEG_WEIGHT` (~1.5-2x) for most of
+the false-positive reduction at less recall cost, re-verified the same way before shipping again.
 
 ### Exporting the dense detector for the rest of the app
 
