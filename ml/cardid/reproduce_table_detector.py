@@ -19,24 +19,42 @@ than one-off fixes bolted on mid-lineage:
     `distant_wide` has been a permanent member of `SPLIT_CAMERA_PROFILES["train"]` ever since, so
     a from-scratch run already sees it from epoch 1 of the very first phase. Skipped here.
 
-One consequence measured, not assumed: `HARD_NEG_WEIGHT` (the loss's clutter/round-object
-upweighting) is now a permanent module constant rather than something introduced only starting at
-`table-a-hardneg-v4`, so what were historically two distinct phases (`table-a-hardneg-v4` then
-`table-a-realclutter-v5`, introducing the hard-negative loss weight and the real-clutter data
-respectively, on *different* data each time) become, here, two runs of the literal same
-`train_table_detector.py` command against the literal same already-v5 data. The first run of this
-script kept both anyway (faithful-to-history) and it backfired: scoring every phase's checkpoint
-against the real-capture golden set directly (not the synthetic `val` split) showed the fourth
-phase (`table-a-hardneg-v4`-equivalent) landed at recall 87.0%/precision 84.7%/fp_on_negatives
-7.4% -- close to the shipped `table-a-realclutter-v5` baseline and *better* on false positives --
-while the fifth, fully-redundant phase drifted it to 84.3%/75.8%/18.5%, worse on every measure.
-Spending 20 more epochs re-training on data the model had already converged on didn't reinforce
-anything; it just moved the checkpoint to a different, not-better point in weight space, and the
-only evaluation that would show this (real_captures, n=108) is exactly the one synthetic `val`
-accuracy can't distinguish by. So there are 5 phases below, not 6: the redundant one is removed
-rather than kept for faithfulness once faithfulness had a measured cost. If you want to spend more
-epochs chasing the exact historical numbers, add them to the last phase or vary its `--seed`
-rather than bolting on another identical phase.
+Two consequences of that, both measured, not assumed, against the real-capture golden set
+directly (not the synthetic `val` split, which is at or near ceiling for every phase below and
+cannot tell any of this apart):
+
+  * `table-a-nonstandard-finetune`'s whole reason to exist was oversampling non-standard card
+    frames into `data/cards` (500 cards, ~88% ordinary -> 767, ~65% ordinary) *before*
+    regenerating `train`. The dataset at `manifest_dir` here (`cards_available: 767`) was already
+    generated from that oversampled catalog, so the very first phase already trains on it --
+    running a second phase on the identical resulting data changed essentially nothing
+    (repro-a-pretrained: recall 76.9%/precision 92.2%; repro-a-nonstandard-finetune: 75.9%/92.1%,
+    within noise). Removed.
+
+  * `HARD_NEG_WEIGHT` (the loss's clutter/round-object upweighting) is now a permanent module
+    constant rather than something introduced only starting at `table-a-hardneg-v4`, so what were
+    historically two distinct phases (`table-a-hardneg-v4` then `table-a-realclutter-v5`,
+    introducing the hard-negative loss weight and the real-clutter data respectively, on
+    *different* data each time) become, here, two runs of the literal same
+    `train_table_detector.py` command against the literal same already-v5 data. The first run of
+    this script kept both anyway (faithful-to-history) and it backfired: the fourth phase
+    (`table-a-hardneg-v4`-equivalent) landed at recall 87.0%/precision 84.7%/fp_on_negatives 7.4%
+    -- close to the shipped `table-a-realclutter-v5` baseline and *better* on false positives --
+    while the fifth, fully-redundant phase drifted it to 84.3%/75.8%/18.5%, worse on every
+    measure. Removed.
+
+`table-a-realcapture-hardening` is kept despite its own historical purpose (introducing clutter/
+round-negative/stacking data, also already baked in here) being similarly moot, because unlike
+the two removed above it is not byte-identical to the phase before it: it runs at
+`--hardware-stress-rate 0.15` where hardware-stress ran at `0.25`, a real training-time difference
+in what the data loader does each epoch, not just a stale rationale. Whether that hyperparameter
+step is itself still worth a separate phase (versus just training hardware-stress longer at 0.15
+throughout) hasn't been measured the same rigorous way the other two were -- a reasonable next
+question if you want to simplify further, but not asserted here without evidence.
+
+So there are 4 phases below, not 6. If you want to spend more epochs chasing the exact historical
+numbers, add them to the last phase or vary its `--seed` rather than bolting on another identical
+phase -- that is what actually moved the result last time, not phase count.
 
 Each phase warm-starts from the previous phase's `best.pt` (score-gated: `recall + precision`),
 matching how every historical `table-a-*` run resumed. Idempotent: re-running skips any phase
@@ -80,11 +98,12 @@ class Phase:
 # flag: `train_table_detector.py` hardcodes an ImageNet-pretrained backbone unconditionally now
 # (an early from-scratch comparison lost decisively; see that module's own docstring), so the
 # first phase's `pretrained: True` in its historical run.json reflects that default, not a flag.
-# `table-a-realclutter-v5` is also skipped -- see module docstring: on this already-v5 dataset it
-# is a byte-identical rerun of the phase before it, and measured worse on the real-capture set.
+# `table-a-nonstandard-finetune` and `table-a-realclutter-v5` are both skipped -- see module
+# docstring: on this already-v5, already-oversampled dataset each is a byte-identical rerun of
+# the phase before it, and both measured no better (nonstandard-finetune) or worse
+# (realclutter-v5) on the real-capture set than just not running them.
 PHASES: list[Phase] = [
     Phase("repro-a-pretrained", epochs=120, batch=32, val_limit=150, workers=2),
-    Phase("repro-a-nonstandard-finetune", epochs=50, batch=32, val_limit=150, workers=3),
     Phase("repro-a-hardware-stress", epochs=25, batch=8, val_limit=100, workers=1, hardware_stress_rate=0.25),
     Phase("repro-a-realcapture-hardening", epochs=20, batch=16, val_limit=150, workers=1, hardware_stress_rate=0.15),
     Phase("repro-a-hardneg-v4", epochs=20, batch=16, val_limit=150, workers=2, hardware_stress_rate=0.15),
