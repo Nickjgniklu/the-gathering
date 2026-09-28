@@ -76,6 +76,15 @@ def setup(args: argparse.Namespace, role: str) -> Runtime:
     runtime = Runtime(device=device, workers=args.workers or workers, threads=args.threads or threads, seed=args.seed)
     torch.set_num_threads(runtime.threads)
     seed_everything(runtime.seed)
+    if device.type == "cuda" and getattr(torch.version, "hip", None) and platform.system() == "Windows":
+        # AMD's native-Windows ROCm wheels (pip's amd-torch-device-gfx*, as opposed to the
+        # Linux-only system ROCm install) do not bundle the C++ standard headers MIOpen's
+        # JIT kernel compiler needs (fails with "'type_traits' file not found" compiling
+        # e.g. batch norm). Disabling cudnn/MIOpen falls back to torch's native composite
+        # kernels for those ops; matmul/conv2d themselves are unaffected (rocBLAS/MIOpen's
+        # precompiled paths, not the JIT one). Remove once AMD ships the missing headers.
+        torch.backends.cudnn.enabled = False
+        print("ROCm on Windows detected: disabling cudnn/MIOpen (JIT kernel compiler is missing headers on this platform)")
     print(f"device: {describe_device(device)}, {runtime.workers} {role} workers, seed {runtime.seed}")
     return runtime
 

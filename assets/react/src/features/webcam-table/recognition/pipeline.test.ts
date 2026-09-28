@@ -2,9 +2,11 @@ import { describe, expect, it } from "vite-plus/test"
 import {
   clickInCrop,
   fromWindow,
+  letterboxToSquare,
   refineSide,
   resampleWindow,
   searchArts,
+  unletterboxQuad,
   upVote,
   type BundleConstants,
   type GalleryArt,
@@ -72,6 +74,45 @@ describe("resampleWindow", () => {
     const { window } = resampleWindow(image, 2, 78, 16, 16)
     expect(pixel(window, 16, 0, 15)).toEqual([0, 79, 7, 255])
     expect(pixel(window, 16, 15, 15)).toEqual([9, 79, 7, 255])
+  })
+})
+
+describe("letterboxToSquare", () => {
+  it("pads a wide image's shorter axis with black instead of stretching it", () => {
+    const { input, transform } = letterboxToSquare(gradient(200, 100), 100)
+    expect(transform).toEqual({ scale: 0.5, offsetX: 0, offsetY: 25 })
+    expect(input.width).toBe(100)
+    expect(input.height).toBe(100)
+    // Above and below the fitted 100x50 strip is opaque padding, not sampled image content.
+    expect(pixel(input.data, 100, 0, 0)).toEqual([0, 0, 0, 255])
+    expect(pixel(input.data, 100, 0, 99)).toEqual([0, 0, 0, 255])
+    // The source's top-left and bottom-right corners land at the strip's edges.
+    expect(pixel(input.data, 100, 0, 25)).toEqual([1, 1, 7, 255])
+    expect(pixel(input.data, 100, 99, 74)).toEqual([199, 99, 7, 255])
+  })
+
+  it("pads a tall image's shorter axis symmetrically", () => {
+    const { transform } = letterboxToSquare(gradient(100, 200), 100)
+    expect(transform).toEqual({ scale: 0.5, offsetX: 25, offsetY: 0 })
+  })
+
+  it("round-trips a quad through letterboxing and back to source pixels", () => {
+    const { transform } = letterboxToSquare(gradient(200, 100), 100)
+    const quad = unletterboxQuad(
+      [
+        [0, 25],
+        [100, 25],
+        [100, 75],
+        [0, 75],
+      ],
+      transform,
+    )
+    expect(quad).toEqual([
+      [0, 0],
+      [200, 0],
+      [200, 100],
+      [0, 100],
+    ])
   })
 })
 

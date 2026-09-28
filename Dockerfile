@@ -87,6 +87,7 @@ ENV PORT=4000
 ENV DATA_DIR=/data
 
 COPY --from=builder --chown=app:app /app/_build/prod/rel/the_gathering ./
+COPY --from=builder --chown=app:app /app/priv/cardid ./priv/cardid
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod 755 /usr/local/bin/docker-entrypoint.sh
 

@@ -21,6 +21,8 @@ interface Preferences {
   quality: PublisherQuality
   stats: boolean
   turnSound: boolean
+  /** Viewer-only full-board recognition. It is always opt-in. */
+  superAi: boolean
   /** Reopen the card tray the way it was left when the stage switches to another board. */
   keepTrayOpen: boolean
   /** The tray's last open state; only read while keepTrayOpen is on. */
@@ -61,6 +63,7 @@ export function useTablePreferences(playerId: number) {
       quality: "auto",
       stats: false,
       turnSound: true,
+      superAi: false,
       keepTrayOpen: false,
       trayOpen: false,
       flippedPlayerIds: [],
@@ -78,6 +81,7 @@ export function useTablePreferences(playerId: number) {
         quality: "quality" in saved && isPublisherQuality(saved.quality) ? saved.quality : "auto",
         stats: "stats" in saved && saved.stats === true,
         turnSound: !("turnSound" in saved && saved.turnSound === false),
+        superAi: "superAi" in saved && saved.superAi === true,
         keepTrayOpen: "keepTrayOpen" in saved && saved.keepTrayOpen === true,
         trayOpen: "trayOpen" in saved && saved.trayOpen === true,
         flippedPlayerIds: savedPlayerIds(saved, FLIP_KEYS.vertical),

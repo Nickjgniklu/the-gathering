@@ -139,6 +139,12 @@ original module kept as the CLI and a re-exporting facade:
 - `constants` holds the detector/refine geometry the manifest ships to the browser;
   `training_runtime` holds device, worker/thread, seed, DataLoader and run-metadata setup for
   both trainers; `envfile` parses `~/.config/cardid.env`.
+- `table_scenes` (full-table synthetic scenes for Super AI mode's multi-card detector) over
+  `table_detector`/`table_scene_dataset`/`train_table_detector` (the dense detector, its
+  dataset, and training), `evaluate_tables` (manifest/scoring helpers the trainer and exporter
+  share), `bench_tables` (render throughput), and `export_table_detector` (the ONNX export) --
+  see "Table scenes and the Super AI mode table detector" below for the full walkthrough and
+  commands.
 
 ## Full catalog (bigger machine)
 
@@ -649,6 +655,341 @@ is the cap: batches are staged in pinned host memory on GPU runs, which is slow 
 some ROCm setups, so compare with `--no-pin` (both tools take it). The datasets ship uint8
 scenes and normalise on the device, so each sample is 196 KB through the queue rather than
 786 KB.
+
+## Table scenes and the Super AI mode table detector
+
+`cardid.table_scenes` renders full-table scenes (0-20 independently labelled cards, not one
+clicked card) for Super AI mode's multi-card detection work
+(`.amp/in/super-ai-mode-plan.md`). A real board is organised, not a pile: every card in a
+scene shares one physical size (`camera_profile` -- how close/zoomed the rig is -- is the only
+thing that changes how big cards look), and cards are laid out on a non-overlapping grid sized
+to that card's on-screen footprint at any rotation; they touch only through the same rare
+aura/equipment/dice/finger occluder the click-window renderer already uses. `setup` picks the
+grid's shape (tidy rows, a scattered subset of the same grid, a small central cluster, a
+two-row battlefield, or two opposing duel zones); `train`/`val`/`test`/`challenge` each get
+their own arrangement(s), camera profile(s), and a disjoint pool of background art crops (see
+`partition_arts`), so none of the three can be solved by memorising a playmat or a fixed scale.
+`challenge` reuses `test`'s arrangement/camera/backgrounds at higher photometric severity and
+crowded density for glare/blur/tiny-card slices. Every scene is reproducible from its seed
+alone; the manifest records each card's quad, axis-aligned bbox, orientation, occluded
+fraction, and an `identifiable` flag (occluded or too small to carry recognisable art/text),
+and `dataset.json` records the renderer version, catalog fingerprint, and split rules.
+
+```sh
+uv run python -m cardid.table_scenes --out ~/the-gathering-cardid/table-scenes   # all 4 splits, defaults from DEFAULT_SCENES
+uv run python -m cardid.table_scenes --split test --test 500                      # regenerate just one split
+uv run python -m cardid.bench_tables --scenes 20 --cards 8                        # rendering throughput
+```
+
+Generated scenes and manifests are large and reproducible from their seed, so they are not
+committed; `--out` defaults to `~/the-gathering-cardid/table-scenes` (override with
+`CARDID_TABLE_SCENES_DIR` or `--out` -- e.g. a dedicated data drive) instead of `data/` precisely
+so a full-scale run does not have to be excluded by hand.
+
+### The table detector
+
+The Super AI mode plan (`.amp/in/super-ai-mode-plan.md`) called for comparing three detection
+strategies (a trained dense detector, a grid sweep over the existing click-conditioned localizer,
+and a hybrid of the two) before picking one to ship. That comparison ran: `table_detector.py`'s
+`TableCenterNet` -- a dense CenterNet-style head (card-presence heatmap + per-cell pose + up
+vector) over the same MobileNetV3-Small backbone/decoder shape the click-conditioned `CornerNet`
+uses, so an ImageNet-pretrained backbone transfers the same way -- won clearly on every measure
+that mattered (accuracy, one-pass latency, no dependency on the click-conditioned model), so this
+project now builds, trains, and exports only that path; the grid-sweep and hybrid strategies and
+their comparison-report tooling were removed once the decision was made.
+
+Train it with `train_table_detector.py` on a pre-rendered `table_scenes` dataset (not rendered on
+the fly, unlike `train_detector.py`):
+
+```sh
+uv run python -m cardid.train_table_detector --manifest-dir ~/the-gathering-cardid/table-scenes --run table-a --epochs 80
+```
+
+Each epoch reports the training loss and, on a `val` subset, recall/precision at IoU 0.5
+(`evaluate_tables.per_card_hits`); checkpoints go to `data/runs/<run>/{last,best}.pt` with a
+`history.json`. The backbone always starts ImageNet-pretrained: an early from-scratch comparison
+run reached only 78% recall / 99.5% precision after 63 epochs, against the pretrained backbone's
+95.8% recall / 99.9% precision converged by epoch 120 on the same dataset, so training a
+from-scratch variant is no longer supported here. None of this identifies cards: that needs a
+trained `ArtIndex` embedding model this tooling does not have.
+
+### Multi-phase training: unbalanced, then oversampled, then hardware-stressed
+
+The shipped checkpoint was trained in successive phases, not one run:
+
+1. **Phase 1 (unbalanced).** `table-a-pretrained-gpu`, 120 epochs on the natural card
+   distribution (`data/cards` sampled randomly from the catalog, ~88% ordinary black-bordered
+   cards, the rest a mix of borderless/showcase/extended-art/etc. in whatever proportion Scryfall
+   happens to have them). Reached 95.8% recall / 99.9% precision on `val` and looked strong
+   across the board -- but a targeted check afterwards (`nonstandard_cards.py`,
+   `evaluate_nonstandard.py`) found a real, reproducible ~1-2 percentage point recall gap on
+   textless, full-art, and extended-art cards specifically versus an ordinary-bordered baseline,
+   even though the gap did not show up in the aggregate `val`/`test` numbers (those splits are
+   themselves ~88% ordinary, so a category-specific weakness is diluted away).
+2. **Phase 2 (oversampled).** Downloaded ~40 more of each non-standard category via Scryfall
+   search (`nonstandard_cards.py download`) and merged them into `data/cards`, taking it from
+   500 cards (~88% ordinary) to 767 (~65% ordinary) -- a deliberate, large oversampling of the
+   categories that showed a gap, not a proportional rebalance to their real-world frequency.
+   Regenerated `train` at a larger 12,000 scenes (`table_scenes.py --split train --train 12000`,
+   same seed) so the added cards get real repetition rather than diluting into a same-sized
+   dataset, then fine-tuned from phase 1's checkpoint (`--resume table-a-pretrained-gpu/best.pt`).
+   Re-running the same non-standard check afterwards, at the same seed for a fair comparison,
+   showed textless/full-art/extended-art recall closing to match the ordinary baseline (100%),
+   for a negligible precision cost (one extra false positive in one category out of ~165).
+
+The lesson worth keeping: a category-specific weakness can hide inside a strong-looking aggregate
+metric when the category is rare in both training and evaluation data. `nonstandard_cards.py`
+downloads a dedicated, deliberately-not-random sample per category precisely so evaluation does
+not inherit the same skew as the training set it is trying to check.
+
+3. **Phase 3 (hardware-stressed).** `hardware_stress.py` found lens/lighting artifacts
+   (vignette, chromatic aberration, colour cast) cost nothing (99.0% recall, same as clean), but
+   genuinely dark rooms cost 31 points (67.7%) and a stack of 2-3 degradations cost 25 (74.5%).
+   Fine-tuned from phase 2's checkpoint with `--hardware-stress-rate 0.25` (a quarter of training
+   scenes augmented with the same dark-room/combined functions), which closed the gap to 97.4%
+   and 99.0% respectively -- but training destabilised after epoch 17 (loss_heat climbing from
+   0.022 to 0.431 over 4 epochs, recall collapsing to 68.5%), so the run was stopped there rather
+   than let it keep degrading; `best.pt`'s score-gated checkpoint selection meant epoch 17's good
+   weights were never overwritten by the divergence. The shipped checkpoint is that epoch, not a
+   full 25-epoch run -- worth retrying at a lower rate (~0.15) if pushing this further.
+
+`table_scene_dataset.py`'s `--hardware-stress-rate` reuses `hardware_stress.py`'s degradation
+functions directly rather than duplicating them, so the same functions serve both evaluation and
+training-time augmentation.
+
+```sh
+uv run python -m cardid.nonstandard_cards download --per-category 40
+uv run python -m cardid.nonstandard_cards evaluate --checkpoint data/runs/<run>/best.pt --scenes-per-category 30
+```
+
+### Card size and density: a severe blind spot below 1/14 of frame width
+
+`size_density_analysis.py` slices an existing test split's recall by card size (short side as a
+fraction of frame width) and by scene density, for free -- no new data, just a different cut of
+what `test`/`challenge` already render. It found card count barely matters up to 20 (sparse 100%,
+crowded 98.0%, exact count 20 at 97.5%), but also that `test` contains **zero cards below 1/14**
+of frame width, because `angled_720p` (the smallest camera profile at the time) never rendered
+anything smaller.
+
+That gap turned out to be real and severe, not just an evaluation blind spot: `small_card_probe.py`
+renders a dedicated eval set explicitly in the 1/20-1/14 range (below every profile's minimum) and
+found recall **collapses to 0% below 1/17** and 41.9% between 1/17 and 1/14, against ~99% for
+anything in the trained range. This is not surprising in hindsight -- a card at 1/17 of a 384px
+input is ~23px wide, barely 5-6 cells across the model's stride-4 grid, and the network had never
+seen anything that small during training -- but it means a webcam framing a full playgroup's board
+from a normal distance could be handing the detector cards it cannot see at all.
+
+Fixed by adding `distant_wide` (`short_frac` 0.045-0.09, i.e. roughly 1/22 to 1/11) to
+`CAMERA_PROFILES` and `train`'s rotation, then regenerating `train` and fine-tuning again; see
+`data/runs/table-a-hardware-stress` (or its successor) and re-run `small_card_probe.py` for the
+after numbers.
+
+```sh
+uv run python -m cardid.size_density_analysis --checkpoint data/runs/<run>/best.pt --manifest-dir ~/the-gathering-cardid/table-scenes
+uv run python -m cardid.small_card_probe --checkpoint data/runs/<run>/best.pt
+```
+
+### Real-capture failure modes: clutter, stacking, round-object false positives, gaming lighting
+
+A screenshot from the deployed Super AI feature (a real desk, dark room, pink/purple gaming LED
+lighting) surfaced five gaps synthetic evaluation alone had not caught: low confidence overall
+under that specific dark+colored-cast combination, a false-positive detection box on a round
+non-card object, confused/merged boxes where cards were adjacent or stacked, and two kinds of
+unmodeled desk clutter (headphones, a deck box viewed edge-on) that the renderer had never drawn.
+Fixes, in the same modules described above:
+
+- **RGB-gaming color-cast bias** (`hardware_stress.py`'s `GAMING_HUES`): `apply_color_cast` now
+  draws 70% of its tints near five real LED-peripheral hues (purple/magenta, blue, red/pink,
+  cyan, green) instead of a uniformly random tint, and a new `apply_dark_gaming_cast` composes
+  dark-room + gaming-cast explicitly; `apply_combined` starts from that specific pairing half the
+  time instead of picking 2-3 of six degradations uniformly, since dark+colored-LED is the single
+  most common bad-desk condition, not one combination among many equally likely ones.
+- **Clutter and round hard negatives** (`scene_renderer.clutter_object`, `round_object`, wired
+  into `table_scenes.render_table_scene` via `CLUTTER_RATE`/`ROUND_NEGATIVE_RATE`): irregular
+  blobs and coaster/plate/lid-shaped discs scattered per scene with no ground-truth quad at all,
+  so the heatmap has to learn to stay quiet near them instead of only ever seeing "not a card"
+  in the shape of a die, a finger, or another card (the three `occluders` already covered).
+- **Deliberate card stacking** (`table_scenes.STACK_RATE`): distinct from the existing rare
+  aura/equipment occluder (a small object over one card), this collapses one card's position
+  onto another's so two full cards sit nearly coincident, both individually labelled -- the
+  first pass this checkpoint got measured against it found **0% recall on the fully-covered
+  lower card** (see the confusion matrix below), a much bigger gap than the aura occluder ever
+  exercised.
+- **Real-capture calibration set** (`data/real-captures/<id>/{frame.png,video_crop.png,
+  annotation.json}`): a small, hand-annotated, growing set of actual webcam captures, seeded with
+  the screenshot that started this investigation (5 real cards, plus 5 hand-boxed negatives
+  including the exact round object the deployed model false-positived on). It is far too small
+  to be a reliable recall/precision estimate on its own (n=1 capture as of this writing) but
+  exists to catch a real synthetic-vs-deployment gap the way this one was found -- add more
+  captures over time the same way. `confusion_matrix.py` letterboxes each capture to square
+  (matching the frontend's `letterboxToSquare`, not a plain resize) before scoring, since a
+  non-square crop resized directly onto a square input distorts aspect ratio in a way no
+  synthetic scene, which is square from the start, ever demonstrates.
+
+All three synthetic additions are on by default in every scene rendered from here on (no flag
+needed), so a plain `table_scenes` regeneration of `train`/`val`/`test`/`challenge` picks them up;
+`RENDERER_VERSION` was bumped to `table-scenes-v3` to mark the distribution change (`v4` later
+raised `STACK_RATE` further -- see "Phase 4" below).
+
+### Confusion matrix: one report across every failure mode measured so far
+
+Object detection has one class ("card"), so there is no NxN label-confusion matrix; the useful
+analogue `confusion_matrix.py` prints is a recall/precision/false-positive-on-hard-negative
+breakdown, one row per category, reusing the same greedy IoU-0.5 matching as every other eval
+script here -- instead of running `evaluate_nonstandard.py`, `hardware_stress.py`,
+`size_density_analysis.py`, and `small_card_probe.py` separately and eyeballing four outputs.
+Categories: `baseline`, `size:<bucket>`, `density:<label>`, `nonstandard:<frame category>`,
+`hw:<degradation>` (including the new `dark_gaming_cast`), `stacking:victim/topper/other`,
+`hard_negatives` (false-positive rate on scenes forced to include clutter/round objects), and
+`real_captures` (the hand-annotated set above, when any exist).
+
+```sh
+uv run python -m cardid.confusion_matrix --checkpoint data/runs/<run>/best.pt --scenes-per-category 30
+```
+
+### Phase 4: fine-tuning against the real-capture findings -- a mixed, honestly-reported result
+
+Fine-tuning `table-a-combined` on a freshly-regenerated `table-scenes-v3` train split (20 epochs,
+`--hardware-stress-rate 0.15`, run `table-a-realcapture-hardening`) trained cleanly with no
+divergence (loss 0.269 -> 0.103 monotonically). A same-seed confusion-matrix before/after
+(`--seed 777 --scenes-per-category 40`) showed:
+
+- **Real, broad wins, no regressions**: every `hw:*` category improved (`dark_room` 0.972 ->
+  0.978, `color_cast` 0.978 -> 0.981, `combined` 0.959 -> 0.967), `nonstandard:*` held steady or
+  improved slightly, and `baseline`/`size`/`density` were unchanged.
+- **Stacking barely moved**: `stacking:victim` (the fully-covered lower card) went 0.184 -> 0.263
+  -- directionally right, but still missing 3 in 4 stacked-under cards. `STACK_RATE` at 0.12 over
+  one 20-epoch pass was not enough exposure for a genuinely hard case.
+- **Hard-negative false positives did not improve**: 0.365 -> 0.385 (essentially flat, within
+  noise). The reason is structural, not a data-volume problem: `table_detector_loss`'s heatmap
+  focal loss already treats every non-card pixel as an equally-weighted negative, so a round or
+  clutter object sitting in the background gives the model no *extra* gradient signal to reject
+  that shape specifically -- it is just more background, indistinguishable in the loss from any
+  other background pixel it was already getting right.
+- **The real capture looked worse (0.800 -> 0.600 recall)**, but this is n=5 cards from a single
+  photo -- a one-card difference is a 20-point swing, not a trustworthy signal in either
+  direction. More real captures are needed before this number means anything on its own.
+
+This checkpoint (`table-a-realcapture-hardening`) was exported and pushed as a net improvement
+(broad wins, zero regressions on the core baseline) while the two stagnant metrics -- stacking and
+hard-negative suppression -- were treated as still-open follow-up work rather than blocking the
+ship, since both are genuinely hard problems this single pass was never going to fully solve.
+
+**Follow-up, `table-scenes-v4`**: `STACK_RATE` doubled (0.12 -> 0.25) for more stacking exposure,
+and `table_detector_loss` gained an explicit `hard_neg_mask` parameter (from `build_targets`'
+new `negatives` argument): cells covered by a clutter/round hard-negative object now get their
+false-positive penalty multiplied by `HARD_NEG_WEIGHT` (3x, in `table_detector.py`) instead of
+the plain background weight, which is the structural fix the flat 0.365 -> 0.385 result called
+for.
+
+Fine-tuning again from `table-a-realcapture-hardening` (run `table-a-hardneg-v4`, same 20 epochs,
+clean convergence, no divergence) produced a genuine trade-off rather than a clean win, per a
+same-seed confusion-matrix comparison:
+
+- **The two targeted metrics improved**: `hard_negatives` false-positive rate 0.385 -> 0.301
+  (~22% relative reduction -- the loss upweight is working), `real_captures` recall bounced back
+  0.600 -> 0.800, `stacking:victim` 0.263 -> 0.289 (modest, despite doubling `STACK_RATE`).
+- **Nearly everything else regressed 1.5-3 points of recall**: `baseline` 0.984 -> 0.972, every
+  `size`/`density`/`nonstandard`/`hw:*` category down by a similar margin, while precision stayed
+  flat or improved slightly across the board. `HARD_NEG_WEIGHT=3.0` most likely leaked past the
+  hard-negative cells it targets: clutter/round objects appear in over half of training scenes
+  (`CLUTTER_RATE` + `ROUND_NEGATIVE_RATE`), so that extra background penalty pushes gradients
+  through the shared backbone often enough to make the whole model modestly more conservative,
+  not just at hard-negative locations specifically.
+
+Shipped anyway (`table-a-hardneg-v4`, exported and pushed): better hard-negative rejection and a
+recovered real-capture number were judged worth the broad recall dip. If this trade-off turns out
+to matter in practice, the next thing to try is a lower `HARD_NEG_WEIGHT` (~1.5-2x) for most of
+the false-positive reduction at less recall cost, re-verified the same way before shipping again.
+
+### Phase 5: real desk-clutter crops close most of the real-world precision gap
+
+The 108-card golden dataset made the actual size of the sim-to-real gap unmistakable:
+`table-a-hardneg-v4` scored 92.6% recall but only **75.8% precision** and a **22.2%
+false-positive rate on known hard-negative regions** on real photos, far below every synthetic
+number. The cause was visual, not a training-signal problem: `clutter_object`/`round_object`
+(the procedural hard negatives `table-a-hardneg-v4` trained against) are flat-colour polygons and
+plain circles -- nothing like the actual dice, deck box, mouse, or keyboard fooling the model in
+practice.
+
+`real_clutter.py` pastes real crops cut from a clean-desk reference photo (dice, a deck box, a
+mouse, a keyboard corner, headphones, a ThermoFlask, squishy toys, a phone dock -- see
+`data/real-clutter-crops/`) into synthetic scenes instead, with random rotation/scale/colour
+jitter and a feathered alpha so they blend rather than leaving a hard seam
+(`table_scenes.REAL_CLUTTER_RATE`, alongside the existing procedural clutter, not replacing it;
+renderer bumped to v5). Fine-tuning `table-a-hardneg-v4` for 20 epochs on data regenerated with
+this (run `table-a-realclutter-v5`) trained cleanly (no divergence) and, per the same same-seed
+confusion-matrix comparison used throughout:
+
+- **`real_captures` precision: 75.8% -> 87.4%** (+11.6 points) and **false-positive rate on known
+  negatives: 22.2% -> 18.5%** -- the real-world gap this whole investigation was chasing, closed
+  by more than a third.
+- **`real_captures` recall: 92.6% -> 89.8%**, a small trade-off for that precision gain.
+- Every synthetic category (`baseline`, `size`, `density`, `nonstandard:*`, `hw:*`) moved by
+  under a point either way -- noise, not a regression.
+- `stacking:victim` continued its slow climb (0.289 -> 0.368) as a side effect of continued
+  training; still weak, still an open problem.
+
+Per-capture: 6 of the 12 real photos now score perfect 100% precision (up from a handful before);
+the remaining false positives concentrate in the same 3 captures (`001`, `002`, `011`) that were
+already the noisiest going in. Exported and pushed as `table-a-realclutter-v5`, the current
+shipped checkpoint.
+
+### Tiled inference: a free win for small/distant cards, no retraining
+
+A standing theory worth testing directly: does downsampling a whole table into one `TABLE_INPUT`
+pass cost recall on small cards, separately from anything the model has or hasn't learned?
+`tiled_inference.py` splits a frame into a grid of overlapping tiles (each covering a fraction of
+the frame, so each needs far less downsampling per card), runs the existing checkpoint on every
+tile plus the whole frame, and deduplicates by IoU -- an inference-time-only change, no retraining.
+
+Tested in two regimes against `table-a-realclutter-v5`, same checkpoint both times:
+
+- **Genuinely out-of-distribution tiny cards** (`short_frac` 0.02-0.04, well below anything any
+  camera profile has ever covered): single-pass recall **collapses to 13.0%**; a plain 2x2 tiled
+  pass alone reaches **84.7%** recall, 94.1% precision. This confirms the theory directly --
+  downsampling, not the model's learned features, is the bottleneck for cards this small.
+- **The 108-card real-capture golden dataset** (a realistic mix of card sizes, most already
+  comfortably sized): a plain tiled-only pass is *worse* than single-pass (74.1% vs. 88.9%
+  recall) -- tiling over-zooms already-well-sized cards past the range any camera profile trained
+  for, costing more than the small-card win recovers.
+
+`detect_multiscale` (whole-frame pass + tiled passes, deduplicated together) gets both: **90.7%
+recall / 87.5% precision on the golden dataset (strictly >= single-pass on every one of the 12
+captures, never worse)**, while keeping nearly all of the tiny-card win (84.0% recall, up from
+13.0%). Free correctness at the cost of ~(rows x cols + 1) forward passes instead of 1 -- cheap on
+a modern GPU/NPU, worth confirming on-device before adopting for the deployed frontend pipeline,
+which does not yet use this.
+
+```sh
+uv run python -m cardid.tiled_inference compare --checkpoint data/runs/<run>/best.pt --rows 2 --cols 2
+```
+
+### Exporting the dense detector for the rest of the app
+
+`export_table_detector.py` exports a `TableCenterNet` checkpoint to a standalone ONNX artifact,
+mirroring `export.py`'s conventions (opset 17, a `manifest.json` with per-file sha256, a
+`SHA256SUMS` file) without touching the click-conditioned recogniser bundle that script owns --
+Super AI mode's frame transport and worker plumbing are separate frontend work this does not
+do. `graphs.TableDetectorGraph` bakes the whole CenterNet decode (peak-picking, per-cell pose
+reconstruction, orientation) into the graph the same way `DetectorGraph` already does for the
+click-conditioned model, batched to a fixed `--max-detections` (default 40) so the output shape
+does not depend on how many cards are on the table; real cards sort first by score; the rest is
+low-score padding for the caller to threshold away. `--verify` compares the exported graph
+(onnxruntime) against the torch reference on real `test`-split scenes by greedy IoU matching:
+
+```sh
+uv run python -m cardid.export_table_detector --checkpoint data/runs/table-a/best.pt \
+  --verify-manifest-dir ~/the-gathering-cardid/table-scenes --verify 80
+```
+
+writes `data/table-detector-exports/<version>/{table_detector.onnx,manifest.json,SHA256SUMS}`.
+The manifest's `contract` field documents the input (`table`: HWC RGBA uint8, exactly
+`table_input` x `table_input`, 384 by default -- resize/letterbox to that size first, since the
+model's notion of card scale was learned at that resolution) and outputs (`quads`, `scores`) so
+the frontend/backend integration that consumes this does not need to read this file to know the
+shapes. A checkpoint mid-training (as long as it loads) exports fine; re-export as later epochs
+finish to ship an improved model without any other code changing.
 
 ## M0 results (2026-09-22, 6k-art gallery, 3,000 queries from 1,000 unseen arts)
 

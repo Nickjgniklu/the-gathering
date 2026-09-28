@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vite-plus/test"
-import { MAX_DATA_MESSAGE_LENGTH, parseDataMessage } from "./data-messages"
+import {
+  MAX_DATA_MESSAGE_LENGTH,
+  SUPER_AI_MAX_CHUNKS,
+  SUPER_AI_MAX_CHUNK_LENGTH,
+  SUPER_AI_MAX_FRAME_BYTES,
+  parseDataMessage,
+} from "./data-messages"
 
 const response = {
   type: "capture_response",
@@ -56,5 +62,53 @@ describe("data channel messages", () => {
     expect(parseDataMessage("[1,2]")).toBeNull()
     expect(send({ type: "card_identified", entry: {} })).toBeNull()
     expect(send({ type: "cards_cleared", ownerPeerId: "someone" })).toBeNull()
+  })
+
+  it("accepts bounded Super AI frame messages and rejects malformed chunks", () => {
+    const digest = "a".repeat(64)
+    expect(
+      send({
+        type: "super_ai_frame_start",
+        requestId: "frame",
+        width: 1280,
+        height: 720,
+        bytes: 10,
+        chunks: 1,
+        digest,
+        private: false,
+      }),
+    ).toMatchObject({ type: "super_ai_frame_start", digest })
+    expect(
+      send({ type: "super_ai_frame_chunk", requestId: "frame", index: 0, data: "AQI=" }),
+    ).toEqual({
+      type: "super_ai_frame_chunk",
+      requestId: "frame",
+      index: 0,
+      data: "AQI=",
+    })
+    expect(
+      send({
+        type: "super_ai_frame_chunk",
+        requestId: "frame",
+        index: 0,
+        data: "A".repeat(SUPER_AI_MAX_CHUNK_LENGTH + 1),
+      }),
+    ).toBeNull()
+    expect(
+      send({ type: "super_ai_frame_chunk", requestId: "frame", index: 0, data: "A" }),
+    ).toBeNull()
+    expect(
+      send({
+        type: "super_ai_frame_start",
+        requestId: "frame",
+        width: 1280,
+        height: 720,
+        bytes: SUPER_AI_MAX_FRAME_BYTES,
+        chunks: SUPER_AI_MAX_CHUNKS - 1,
+        digest,
+        private: false,
+      }),
+    ).toBeNull()
+    expect(send({ type: "super_ai_frame_start", requestId: "frame", digest: "bad" })).toBeNull()
   })
 })

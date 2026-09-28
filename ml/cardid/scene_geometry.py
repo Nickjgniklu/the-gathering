@@ -41,6 +41,22 @@ def quad_roi(quad: np.ndarray, shape: tuple[int, ...]) -> tuple[int, int, int, i
     return None if x1 <= x0 or y1 <= y0 else (x0, y0, x1, y1)
 
 
+def quad_iou(left: np.ndarray, right: np.ndarray) -> float:
+    """Raster-free convex-polygon IoU, suitable for rotated card quads."""
+    left, right = left.astype(np.float32), right.astype(np.float32)
+    intersection, polygon = cv2.intersectConvexConvex(left, right)
+    if polygon is None:
+        return 0.0
+    return float(intersection / max(cv2.contourArea(left) + cv2.contourArea(right) - intersection, 1e-6))
+
+
+def quad_bbox(quad: np.ndarray) -> tuple[float, float, float, float]:
+    """Axis-aligned (x0, y0, x1, y1) bounding box of a quad, in the same units as its corners."""
+    x0, y0 = quad.min(axis=0)
+    x1, y1 = quad.max(axis=0)
+    return float(x0), float(y0), float(x1), float(y1)
+
+
 def quad_short(quad: np.ndarray) -> float:
     w = (np.linalg.norm(quad[1] - quad[0]) + np.linalg.norm(quad[2] - quad[3])) / 2
     h = (np.linalg.norm(quad[3] - quad[0]) + np.linalg.norm(quad[2] - quad[1])) / 2

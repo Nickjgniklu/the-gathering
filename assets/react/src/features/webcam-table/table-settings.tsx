@@ -246,6 +246,16 @@ export function TableSettings({
         </p>
       </PanelSection>
       <PanelSection title="Card scan" icon={ScanSearch}>
+        <Toggle
+          checked={preferences.superAi}
+          onChange={(superAi) => preferences.update({ superAi })}
+        >
+          Super AI board scan
+        </Toggle>
+        <p className="mt-2 text-[0.65rem] text-base-content/60">
+          Requests a full camera frame from the visible board every 10 seconds. Frames and card
+          matches stay in the two browsers and are never sent to the server.
+        </p>
         <CorrectionPreference upload={corrections} />
         <p className="mt-3 break-words text-[0.65rem] text-base-content/60">
           {describeRecognizer(recognizer)}

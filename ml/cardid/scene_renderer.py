@@ -273,31 +273,65 @@ def occluders(canvas: np.ndarray, rng: np.random.Generator, quad: np.ndarray, ca
         cv2.circle(canvas, (int(end[0]), int(end[1])), int(width / 2), tuple(float(v) for v in skin * 0.95), -1, lineType=cv2.LINE_AA)
 
 
-def photometrics(img: np.ndarray, rng: np.random.Generator, scale: float = DET_INPUT / SCENE) -> np.ndarray:
+def clutter_object(canvas: np.ndarray, rng: np.random.Generator, center: np.ndarray, scale: float) -> None:
+    """A generic irregular non-card object on the table -- headphones, a tin, a cup, a coiled
+    cable -- drawn as a soft-edged asymmetric blob so the model sees plenty of "not a card"
+    shapes near cards, not just the four kinds of thing `occluders` already draws (another
+    card, dice, a finger). No ground-truth quad is ever recorded for this: it exists purely so
+    the heatmap learns to stay quiet here, the same real-desk clutter that produced a false
+    positive on a round object in a live capture (see `ml/README.md`)."""
+    n = int(rng.integers(5, 9))
+    angles = np.sort(rng.uniform(0, 2 * np.pi, n))
+    radii = scale * rng.uniform(0.5, 1.15, n)
+    pts = (center + np.stack([np.cos(angles), np.sin(angles) * rng.uniform(0.6, 1.3)], axis=1) * radii[:, None]).astype(np.int32)
+    color = tuple(float(v) for v in rng.uniform(20, 210, size=3))
+    mask = np.zeros(canvas.shape[:2], np.uint8)
+    cv2.fillPoly(mask, [pts], 255, lineType=cv2.LINE_AA)
+    sigma = scale * rng.uniform(0.04, 0.1)
+    soft = cv2.GaussianBlur(mask.astype(np.float32) / 255.0, (0, 0), sigma)
+    canvas += (np.float32(color) - canvas) * soft[..., None]
+
+
+def round_object(canvas: np.ndarray, rng: np.random.Generator, center: np.ndarray, radius: float) -> None:
+    """A round tabletop object -- a coaster, plate, lid, or coin -- the commonest shape a
+    corner-based card detector can mistake for a rotated card at a glance. Trained as an
+    explicit hard negative (no ground-truth quad) for the same reason as `clutter_object`."""
+    color = tuple(float(v) for v in rng.uniform(15, 235, size=3))
+    cv2.circle(canvas, (int(center[0]), int(center[1])), int(radius), color, -1, lineType=cv2.LINE_AA)
+    if rng.random() < 0.6:  # a rim or pattern ring, so it is not always a flat disc
+        ring_color = tuple(float(v) for v in np.clip(np.float32(color) * rng.uniform(0.5, 1.5), 0, 255))
+        cv2.circle(canvas, (int(center[0]), int(center[1])), int(radius * rng.uniform(0.5, 0.85)), ring_color, max(1, int(radius * 0.08)), lineType=cv2.LINE_AA)
+
+
+def photometrics(img: np.ndarray, rng: np.random.Generator, scale: float = DET_INPUT / SCENE, severity: float = 1.0) -> np.ndarray:
     """Webcam look: exposure, white balance, gamma, saturation, defocus, sensor noise, and
     the stream's compression. Applied at detector-input resolution, so blur and noise are
-    scaled by `scale` (native px -> input px) from what a 1080p sensor produces. Returns uint8."""
+    scaled by `scale` (native px -> input px) from what a 1080p sensor produces. `severity`
+    widens every degradation range around its own default (1.0 reproduces the original
+    single-card renderer exactly); challenge-split table scenes pass > 1 for harsher glare,
+    blur, colour shift and compression. Returns uint8."""
     # exposure/white balance/contrast/brightness/gamma are per-value maps, so apply them to the
     # 256-entry channel LUTs rather than to every pixel
-    levels = np.arange(256, dtype=np.float32)[:, None] * rng.uniform(0.85, 1.15, size=3).astype(np.float32)
-    levels = (levels - 128) * rng.uniform(0.75, 1.25) + 128 + rng.uniform(-30, 30)
+    wb = 0.15 * severity
+    levels = np.arange(256, dtype=np.float32)[:, None] * rng.uniform(1 - wb, 1 + wb, size=3).astype(np.float32)
+    levels = (levels - 128) * rng.uniform(1 - 0.25 * severity, 1 + 0.25 * severity) + 128 + rng.uniform(-30 * severity, 30 * severity)
     levels = (255 * (np.clip(levels, 0, 255) / 255) ** rng.uniform(0.8, 1.25)).astype(np.float32)
     x = np.stack([levels[:, ch][img[..., ch]] for ch in range(3)], axis=2)
     gray = x.mean(axis=2, keepdims=True)
     x = gray + (x - gray) * rng.uniform(0.7, 1.2)
-    sigma = rng.uniform(0, 1.6) * scale
+    sigma = rng.uniform(0, 1.6 * severity) * scale
     if sigma > 0.15:
         x = cv2.GaussianBlur(x, (0, 0), sigma)
-    if rng.random() < 0.1:
+    if rng.random() < min(0.1 * severity, 0.9):
         k = int(rng.integers(3, 6))
         kernel = np.zeros((k, k), np.float32)
         kernel[k // 2, :] = 1.0 / k
         kernel = cv2.warpAffine(kernel, cv2.getRotationMatrix2D((k / 2 - 0.5, k / 2 - 0.5), rng.uniform(0, 180), 1.0), (k, k))
         x = cv2.filter2D(x, -1, kernel / max(kernel.sum(), 1e-6))
     # averaging 1/scale^2 sensor pixels per input pixel shrinks the noise by `scale`
-    x += rng.standard_normal(size=x.shape, dtype=np.float32) * np.float32(rng.uniform(1, 8) * max(scale, 0.4))
+    x += rng.standard_normal(size=x.shape, dtype=np.float32) * np.float32(rng.uniform(1, 8 * severity) * max(scale, 0.4))
     x = np.clip(x, 0, 255, out=x).astype(np.uint8)
-    quality = int(rng.integers(50, 95))
+    quality = int(rng.integers(max(20, 50 - 15 * (severity - 1)), 95))
     _ok, enc = cv2.imencode(".jpg", cv2.cvtColor(x, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, quality])
     return cv2.cvtColor(cv2.imdecode(enc, cv2.IMREAD_COLOR), cv2.COLOR_BGR2RGB)
 

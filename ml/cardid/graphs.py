@@ -2,12 +2,13 @@
 into the exported ONNX graphs, so a runtime (onnxruntime-web in the camera owner's browser,
 onnxruntime on a server) only resamples an affine window and does a handful of scalar ops.
 
-Three graphs, all with the image handed over as the browser has it (uint8 RGBA, HWC):
+Four graphs, all with the image handed over as the browser has it (uint8 RGBA, HWC):
 
-    DetectorGraph  window (256, 256, 4)          -> quad (4, 2) window px in printed order,
-                                                    up (2,), centre (2,), short ()
-    EmbedGraph     scene (H, W, 4), quad (4, 2)  -> embeddings (F, 128), one per frame cut
-    SearchGraph    embeddings (F, 128)           -> indices (k,), scores (k,)
+    DetectorGraph      window (256, 256, 4)          -> quad (4, 2) window px in printed order,
+                                                        up (2,), centre (2,), short ()
+    EmbedGraph         scene (H, W, 4), quad (4, 2)  -> embeddings (F, 128), one per frame cut
+    SearchGraph        embeddings (F, 128)           -> indices (k,), scores (k,)
+    TableDetectorGraph table (H, W, 4)               -> quads (K, 4, 2), scores (K,)
 
 `DetectorGraph` is `Detector.predict_window` plus `cyclic_order`/`orient_quad` for one window:
 the four 90-degree rotations, CornerNet, the heatmap corner snap (`snap_corners`, written
@@ -19,6 +20,13 @@ cuts resized to 128px and embedded in one batch. `SearchGraph` is `index.frame_s
 
 `cardid.bundle.Bundle` runs the exported graphs from Python and is the reference for the
 remaining glue (window affine, the two-pass refine, mapping back to image pixels).
+
+`TableDetectorGraph` is `table_detector.TableCenterNet` plus its whole decode
+(`table_detector.decode_detections`, batched over a fixed `max_detections` instead of Python's
+dynamic-length `torch.nonzero`/loop) baked into the graph, the same way `DetectorGraph` bakes in
+`snap_corners`/`cyclic_order`/`orient_quad`: the caller gets `max_detections` quads and scores
+straight back, most of them low-score padding once the real cards run out, and applies its own
+confidence threshold and any further NMS.
 """
 
 from __future__ import annotations
@@ -33,6 +41,7 @@ from .degrade import INPUT_SIZE
 from .detect import CARD_H, CARD_W, FRAME_NAMES, FRAME_ROTATIONS, frame_box
 from .detector import HEAT_SIZE, HEAT_STRIDE, CornerNet
 from .model import Embedder
+from .table_detector import TableCenterNet
 
 SNAP_THRESHOLD = 0.3
 
@@ -191,6 +200,86 @@ class EmbedGraph(nn.Module):
         mean = torch.as_tensor(IMAGENET_MEAN).view(1, 3, 1, 1)
         std = torch.as_tensor(IMAGENET_STD).view(1, 3, 1, 1)
         return self.embedder((x - mean) / std)
+
+
+def card_rect_graph_k(cx: torch.Tensor, cy: torch.Tensor, short: torch.Tensor, angle: torch.Tensor) -> torch.Tensor:
+    """`detector.card_rect` for `K` poses at once: (K,) cx, cy, short, angle (radians) ->
+    (K, 4, 2) printed-order-ish corners (180-degree ambiguous, like the scalar version;
+    `orient_quad_graph_k` resolves it)."""
+    hx, hy = short / 2, short * CARD_ASPECT / 2
+    base = torch.stack(
+        [
+            torch.stack([-hx, -hy], dim=-1),
+            torch.stack([hx, -hy], dim=-1),
+            torch.stack([hx, hy], dim=-1),
+            torch.stack([-hx, hy], dim=-1),
+        ],
+        dim=1,
+    )  # (K, 4, 2)
+    cos, sin = torch.cos(angle), torch.sin(angle)
+    rot = torch.stack([torch.stack([cos, -sin], dim=-1), torch.stack([sin, cos], dim=-1)], dim=-2)  # (K, 2, 2)
+    rotated = torch.einsum("kij,kpj->kpi", rot, base)
+    return rotated + torch.stack([cx, cy], dim=-1)[:, None, :]
+
+
+def cyclic_order_graph_k(quad: torch.Tensor) -> torch.Tensor:
+    """`detector.cyclic_order` for `K` quads at once: (K, 4, 2) -> (K, 4, 2), each clockwise
+    from the corner nearest its own top-left."""
+    c = quad.mean(dim=1, keepdim=True)
+    ang = torch.atan2(quad[..., 1] - c[..., 1], quad[..., 0] - c[..., 0])
+    order = torch.argsort(ang, dim=1)
+    q = torch.gather(quad, 1, order[..., None].expand(-1, -1, 2))
+    k0 = torch.argmin(q.sum(dim=-1), dim=1)
+    idx = (torch.arange(4)[None, :] + k0[:, None]) % 4
+    return torch.gather(q, 1, idx[..., None].expand(-1, -1, 2))
+
+
+def orient_quad_graph_k(quad: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
+    """`detector.orient_quad` for `K` cyclically ordered quads and their up vectors: (K, 4, 2),
+    (K, 2) -> (K, 4, 2) with corner 0 rolled to each quad's printed top-left."""
+    edges = torch.roll(quad, -1, dims=1) - quad
+    lengths = torch.linalg.norm(edges, dim=-1)
+    first = torch.where(lengths[:, 0] + lengths[:, 2] < lengths[:, 1] + lengths[:, 3], 0, 1)
+    mids = (quad + torch.roll(quad, -1, dims=1)) / 2 - quad.mean(dim=1, keepdim=True)
+    votes = (mids * up[:, None, :]).sum(dim=-1)
+    vote_first = torch.gather(votes, 1, first[:, None])[:, 0]
+    vote_other = torch.gather(votes, 1, (first + 2)[:, None])[:, 0]
+    k = torch.where(vote_first >= vote_other, first, first + 2)
+    idx = (torch.arange(4)[None, :] + k[:, None]) % 4
+    return torch.gather(quad, 1, idx[..., None].expand(-1, -1, 2))
+
+
+class TableDetectorGraph(nn.Module):
+    """One dense multi-card detection pass over a full table image: `TableCenterNet` plus its
+    whole CenterNet-style decode (peak-picking, per-peak pose reconstruction, orientation),
+    batched to a fixed `max_detections` so the graph's output shape does not depend on how many
+    cards are actually on the table. Real detections sort first by score; once cards run out the
+    remaining slots are low-score padding the caller discards with its own confidence threshold."""
+
+    def __init__(self, net: TableCenterNet, stride: int, max_detections: int = 40):
+        super().__init__()
+        self.net = net.eval()
+        self.stride = stride
+        self.max_detections = max_detections
+
+    def forward(self, table: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        x = _normalise(table)[None]
+        heat_logits, pose, up = self.net(x)
+        prob = torch.sigmoid(heat_logits[0, 0])  # (S, S)
+        pooled = nn.functional.max_pool2d(prob[None, None], 3, stride=1, padding=1)[0, 0]
+        peak_scores = torch.where(prob >= pooled, prob, torch.zeros_like(prob))  # CenterNet-style NMS-free peaks
+        size = prob.shape[-1]
+        top = torch.topk(peak_scores.flatten(), self.max_detections)
+        idx = top.indices
+        ys, xs = (idx // size).to(torch.float32), (idx % size).to(torch.float32)
+        cx, cy = (xs + 0.5) * self.stride, (ys + 0.5) * self.stride
+        pose_k = pose[0].flatten(1)[:, idx]  # (3, K)
+        up_k = up[0].flatten(1)[:, idx]  # (2, K)
+        short = torch.exp(pose_k[0])
+        angle = 0.5 * torch.atan2(pose_k[2], pose_k[1])
+        quad = card_rect_graph_k(cx, cy, short, angle)
+        quad = orient_quad_graph_k(cyclic_order_graph_k(quad), up_k.T)
+        return quad, top.values
 
 
 class SearchGraph(nn.Module):

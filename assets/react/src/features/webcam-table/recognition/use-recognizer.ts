@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { api, ApiError } from "@/lib/api"
-import type { BundleInfo, Identification, WorkerRequest, WorkerResponse } from "./messages"
+import type {
+  BundleInfo,
+  FullFrameIdentification,
+  FullFrameOptions,
+  Identification,
+  TableDetection,
+  WorkerRequest,
+  WorkerResponse,
+} from "./messages"
 import type { GalleryArt, RgbaImage } from "./pipeline"
 
 export type RecognizerState =
@@ -71,9 +79,14 @@ export function useRecognizer(preload = false) {
       } else if (message.type === "load_failed") {
         setState({ status: "failed", message: message.message })
         rejectLoadRef.current(new Error(message.message))
-      } else if (message.type === "identified" || message.type === "matches") {
+      } else if (
+        message.type === "identified" ||
+        message.type === "frame_identified" ||
+        message.type === "table_detected" ||
+        message.type === "matches"
+      ) {
         settle(pending, message.id)?.resolve(
-          message.type === "identified" ? message.result : message.arts,
+          message.type === "matches" ? message.arts : message.result,
         )
       } else {
         settle(pending, message.id)?.reject(new Error(message.message))
@@ -125,20 +138,29 @@ export function useRecognizer(preload = false) {
       build: (id: number) => WorkerRequest,
       transfer: Transferable[],
       timeoutMs?: number,
+      signal?: AbortSignal,
     ) => {
       await start()
       return new Promise<T>((resolve, reject) => {
         const worker = workerRef.current
         if (!worker) return reject(new Error("recognizer not running"))
+        if (signal?.aborted) return reject(new DOMException("scan cancelled", "AbortError"))
         const id = (nextIdRef.current += 1)
         const entry: Pending = { resolve: resolve as (value: unknown) => void, reject }
+        const cancel = () => {
+          if (!settle(pendingRef.current, id)) return
+          worker.postMessage({ type: "cancel", id } satisfies WorkerRequest)
+          reject(new DOMException("scan cancelled", "AbortError"))
+        }
         if (timeoutMs) {
           entry.timer = window.setTimeout(() => {
-            pendingRef.current.delete(id)
+            if (!settle(pendingRef.current, id)) return
+            worker.postMessage({ type: "cancel", id } satisfies WorkerRequest)
             reject(new Error(`no result within ${timeoutMs} ms`))
           }, timeoutMs)
         }
         pendingRef.current.set(id, entry)
+        signal?.addEventListener("abort", cancel, { once: true })
         worker.postMessage(build(id), transfer)
       })
     },
@@ -152,6 +174,40 @@ export function useRecognizer(preload = false) {
         (id) => ({ type: "identify", id, rgba, width: image.width, height: image.height, x, y }),
         [rgba],
         timeoutMs,
+      )
+    },
+    [request],
+  )
+
+  const identifyFrame = useCallback(
+    (image: RgbaImage, options?: FullFrameOptions, signal?: AbortSignal) => {
+      const rgba = image.data.buffer.slice(0) as ArrayBuffer
+      return request<FullFrameIdentification>(
+        (id) => ({
+          type: "identify_frame",
+          id,
+          rgba,
+          width: image.width,
+          height: image.height,
+          options,
+        }),
+        [rgba],
+        undefined,
+        signal,
+      )
+    },
+    [request],
+  )
+
+  /** One dense pass of the table detector: every card's box and confidence, no identity. */
+  const detectTable = useCallback(
+    (image: RgbaImage, signal?: AbortSignal) => {
+      const rgba = image.data.buffer.slice(0) as ArrayBuffer
+      return request<TableDetection>(
+        (id) => ({ type: "detect_table", id, rgba, width: image.width, height: image.height }),
+        [rgba],
+        undefined,
+        signal,
       )
     },
     [request],
@@ -173,7 +229,16 @@ export function useRecognizer(preload = false) {
     [request],
   )
 
-  return { state, ready: state.status === "ready", identify, search, printings, locate }
+  return {
+    state,
+    ready: state.status === "ready",
+    identify,
+    identifyFrame,
+    detectTable,
+    search,
+    printings,
+    locate,
+  }
 }
 
 function post(worker: Worker, message: WorkerRequest) {
@@ -191,6 +256,11 @@ function settle(pending: Map<number, Pending>, id: number): Pending | undefined 
 /** Decodes a data-URL image (the camera owner's JPEG crop) into RGBA pixels. */
 export async function decodeImage(dataUrl: string): Promise<RgbaImage> {
   const blob = await (await fetch(dataUrl)).blob()
+  return decodeJpeg(blob)
+}
+
+/** Decodes a received Super AI JPEG without making a network request. */
+export async function decodeJpeg(blob: Blob): Promise<RgbaImage> {
   const bitmap = await createImageBitmap(blob)
   const canvas = new OffscreenCanvas(bitmap.width, bitmap.height)
   const context = canvas.getContext("2d")

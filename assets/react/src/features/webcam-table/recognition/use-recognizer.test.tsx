@@ -126,3 +126,88 @@ it("warms the bundle once preload turns on and reuses that worker for the first 
   worker.reply({ type: "matches", id: 1, arts: [] })
   await expect(search).resolves.toEqual([])
 })
+
+it("cancels an in-flight full-frame scan through the worker", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: { version: "v1" } }))),
+  )
+  vi.stubGlobal("Worker", FakeWorker)
+  const { result } = renderHook(useRecognizer)
+  const controller = new AbortController()
+  let scan!: ReturnType<typeof result.current.identifyFrame>
+  act(() => {
+    scan = result.current.identifyFrame(
+      { data: new Uint8ClampedArray(16), width: 2, height: 2 },
+      { strategy: "hybrid" },
+      controller.signal,
+    )
+  })
+  const worker = FakeWorker.instances[0]!
+  await waitFor(() => expect(worker.postMessage).toHaveBeenCalledTimes(1))
+  await act(async () => {
+    worker.reply({ type: "ready", version: "v1", arts: 2, ms: 10 })
+  })
+  await waitFor(() =>
+    expect(worker.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "identify_frame", id: 1, options: { strategy: "hybrid" } }),
+      expect.any(Array),
+    ),
+  )
+  act(() => controller.abort())
+  await expect(scan).rejects.toMatchObject({ name: "AbortError" })
+  expect(worker.postMessage).toHaveBeenCalledWith({ type: "cancel", id: 1 })
+})
+
+it("resolves a table-detection scan and cancels it through the same request path", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: { version: "v1" } }))),
+  )
+  vi.stubGlobal("Worker", FakeWorker)
+  const { result } = renderHook(useRecognizer)
+  let scan!: ReturnType<typeof result.current.detectTable>
+  act(() => {
+    scan = result.current.detectTable({ data: new Uint8ClampedArray(16), width: 2, height: 2 })
+  })
+  const worker = FakeWorker.instances[0]!
+  await waitFor(() => expect(worker.postMessage).toHaveBeenCalledTimes(1))
+  await act(async () => {
+    worker.reply({ type: "ready", version: "v1", arts: 0, ms: 10 })
+  })
+  await waitFor(() =>
+    expect(worker.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "detect_table", id: 1 }),
+      expect.any(Array),
+    ),
+  )
+  const result1 = {
+    cards: [
+      {
+        quad: [
+          [0, 0],
+          [1, 0],
+          [1, 1],
+          [0, 1],
+        ],
+        score: 0.8,
+      },
+    ],
+    totalMs: 5,
+  }
+  act(() => worker.reply({ type: "table_detected", id: 1, result: result1 }))
+  await expect(scan).resolves.toEqual(result1)
+
+  const controller = new AbortController()
+  let cancelled!: ReturnType<typeof result.current.detectTable>
+  act(() => {
+    cancelled = result.current.detectTable(
+      { data: new Uint8ClampedArray(16), width: 2, height: 2 },
+      controller.signal,
+    )
+  })
+  await waitFor(() => expect(worker.postMessage).toHaveBeenCalledTimes(3))
+  act(() => controller.abort())
+  await expect(cancelled).rejects.toMatchObject({ name: "AbortError" })
+  expect(worker.postMessage).toHaveBeenCalledWith({ type: "cancel", id: 2 })
+})

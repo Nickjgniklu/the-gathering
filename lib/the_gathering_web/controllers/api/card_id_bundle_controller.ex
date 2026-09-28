@@ -19,14 +19,19 @@ defmodule TheGatheringWeb.API.CardIdBundleController do
     "printings.json" => "application/json",
     "detector.onnx" => "application/octet-stream",
     "embed.onnx" => "application/octet-stream",
-    "search.onnx" => "application/octet-stream"
+    "search.onnx" => "application/octet-stream",
+    "table_detector.onnx" => "application/octet-stream"
   }
 
   def show(conn, _params) do
     with {:ok, manifest} <- CardId.current_manifest() do
+      # Only files this version actually has on disk (not just named in the manifest's own
+      # `files` key): the table detector may ship years before the embedding pipeline
+      # (arts.json/detector.onnx/embed.onnx/search.onnx) exists, or the other way around, and
+      # printings.json is always sibling-file optional.
       files =
         CardId.files()
-        |> Enum.filter(&(&1 != "printings.json" or Map.has_key?(manifest["files"] || %{}, &1)))
+        |> Enum.filter(&match?({:ok, _}, CardId.file_path(manifest["version"], &1)))
         |> Map.new(fn name ->
           {name, ~p"/api/cardid/bundles/#{manifest["version"]}/#{name}"}
         end)

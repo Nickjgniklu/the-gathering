@@ -111,6 +111,7 @@ it("persists view, camera, stats and sound choices without accepting malformed v
       panelLeft: true,
       stats: true,
       turnSound: true,
+      superAi: true,
     }),
   )
   first.unmount()
@@ -123,6 +124,7 @@ it("persists view, camera, stats and sound choices without accepting malformed v
     panelLeft: true,
     stats: true,
     turnSound: true,
+    superAi: true,
   })
   act(() => next.result.current.resetWidths())
   expect(next.result.current).toMatchObject({
@@ -133,5 +135,6 @@ it("persists view, camera, stats and sound choices without accepting malformed v
     panelLeft: true,
     stats: true,
     turnSound: true,
+    superAi: true,
   })
 })

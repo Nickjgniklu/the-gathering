@@ -4,6 +4,7 @@ import type { RoomLink } from "./room-link"
 import { sharesCorrections } from "./use-correction-upload"
 
 const CROP_SIZE = 640
+const SUPER_AI_LONG_EDGE = 1280
 
 /** Replaces the camera track in every peer's sender after the local camera changes. */
 export type TrackSwap = (track: MediaStreamTrack) => Promise<unknown>
@@ -27,6 +28,20 @@ function captureCrop(video: HTMLVideoElement, x: number, y: number) {
     clickY: y * height - top,
     shareCorrections: sharesCorrections(),
   }
+}
+
+function captureFrame(video: HTMLVideoElement) {
+  const nativeWidth = video.videoWidth
+  const nativeHeight = video.videoHeight
+  if (!nativeWidth || !nativeHeight) return null
+  const scale = Math.min(1, SUPER_AI_LONG_EDGE / Math.max(nativeWidth, nativeHeight))
+  const width = Math.max(1, Math.round(nativeWidth * scale))
+  const height = Math.max(1, Math.round(nativeHeight * scale))
+  const canvas = document.createElement("canvas")
+  canvas.width = width
+  canvas.height = height
+  canvas.getContext("2d")?.drawImage(video, 0, 0, nativeWidth, nativeHeight, 0, 0, width, height)
+  return { image: canvas.toDataURL("image/jpeg", 0.7), width, height }
 }
 
 /** The local camera: a black placeholder until the seat is admitted, then the chosen device,
@@ -148,6 +163,7 @@ export function useLocalCamera(link: RoomLink, deviceId: string, cameraEnabled: 
     (x: number, y: number) => (videoRef.current ? captureCrop(videoRef.current, x, y) : null),
     [],
   )
+  const frame = useCallback(() => (videoRef.current ? captureFrame(videoRef.current) : null), [])
 
   /** Stops every local track and abandons a camera that is still opening. */
   const stop = useCallback(() => {
@@ -168,6 +184,7 @@ export function useLocalCamera(link: RoomLink, deviceId: string, cameraEnabled: 
     startCamera,
     toggleCamera,
     crop,
+    frame,
     stop,
   }
 }

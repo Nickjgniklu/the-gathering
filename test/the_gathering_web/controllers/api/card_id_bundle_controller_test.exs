@@ -50,7 +50,7 @@ defmodule TheGatheringWeb.API.CardIdBundleControllerTest do
     assert conn |> get(~p"/api/cardid/bundles/v1/embed.onnx") |> response(200)
   end
 
-  test "only advertises the optional sibling file when the manifest includes it", %{
+  test "only advertises the optional sibling file once it exists on disk", %{
     conn: conn,
     root: root
   } do
@@ -68,6 +68,50 @@ defmodule TheGatheringWeb.API.CardIdBundleControllerTest do
     response = get(conn, url)
     assert json_response(response, 200) == %{"a" => [%{"id" => "sibling"}]}
     assert get_resp_header(response, "cache-control") == ["private, max-age=31536000, immutable"]
+  end
+
+  test "advertises the table detector once published, and serves a detection-only bundle", %{
+    conn: conn,
+    root: root
+  } do
+    publish(root, "v1")
+    data = conn |> get(~p"/api/cardid/bundle") |> json_response(200)
+    refute Map.has_key?(data["data"]["files"], "table_detector.onnx")
+
+    manifest_path = Path.join([root, "v1", "manifest.json"])
+    manifest = manifest_path |> File.read!() |> Jason.decode!()
+    File.write!(manifest_path, Jason.encode!(put_in(manifest, ["files", "table_detector.onnx"], %{})))
+    File.write!(Path.join([root, "v1", "table_detector.onnx"]), "table-onnx-bytes")
+    data = conn |> get(~p"/api/cardid/bundle") |> json_response(200)
+    url = data["data"]["files"]["table_detector.onnx"]
+    assert url == "/api/cardid/bundles/v1/table_detector.onnx"
+    response = get(conn, url)
+    assert response.resp_body == "table-onnx-bytes"
+    assert get_resp_header(response, "content-type") == ["application/octet-stream"]
+
+    # No embedding pipeline published yet: gallery/constants/arts.json are absent entirely.
+    detection_only = %{
+      "version" => "detector-only",
+      "created" => "2026-09-26T00:00:00+00:00",
+      "files" => %{"table_detector.onnx" => %{}}
+    }
+
+    dir = Path.join(root, "detector-only")
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, "manifest.json"), Jason.encode!(detection_only))
+    File.write!(Path.join(dir, "table_detector.onnx"), "table-onnx-bytes")
+    current = Path.join(root, "current")
+    File.rm(current)
+    File.ln_s!("detector-only", current)
+
+    assert %{"data" => data} = conn |> get(~p"/api/cardid/bundle") |> json_response(200)
+    assert data["version"] == "detector-only"
+    assert data["gallery"] == nil
+    assert data["constants"] == nil
+    assert data["files"] == %{
+             "manifest.json" => "/api/cardid/bundles/detector-only/manifest.json",
+             "table_detector.onnx" => "/api/cardid/bundles/detector-only/table_detector.onnx"
+           }
   end
 
   test "refuses files outside the bundle", %{conn: conn, root: root} do

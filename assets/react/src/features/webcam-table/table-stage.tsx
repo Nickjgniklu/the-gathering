@@ -1,12 +1,14 @@
 import { Link } from "@tanstack/react-router"
-import { LayoutGrid, Undo2 } from "lucide-react"
+import { LayoutGrid, Sparkles, Undo2 } from "lucide-react"
 import type { Ref } from "react"
+import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/cn"
 import { ActiveBoard, capturePoint } from "./board"
 import { BoardCardTray } from "./board-cards"
 import { cameraGridLayout } from "./camera-grid"
 import { CardPreview } from "./card-preview"
 import { CardSuggestions } from "./card-suggestions"
+import { SuperAiOverlay, type SuperAiOverlayCard } from "./super-ai-overlay"
 import type { TableParticipant } from "./room-types"
 import { describeRoll } from "./table-rolls"
 import { SeatActions, SeatLife, SeatTile, TeamHeader } from "./table-seat"
@@ -26,10 +28,16 @@ function StageBoard({
   view,
   participant,
   flow,
+  superAiCards,
+  superAiEnabled,
+  onToggleSuperAi,
 }: {
   view: TableView
   participant: TableParticipant
   flow: CardIdentificationFlow
+  superAiCards: { cards: SuperAiOverlayCard[]; source: { width: number; height: number } | null }
+  superAiEnabled: boolean
+  onToggleSuperAi: () => void
 }) {
   const { room, preferences } = view
   return (
@@ -70,6 +78,26 @@ function StageBoard({
               room.requestCapture(participant.peer_id, point.x, point.y, event.shiftKey, flip)
           }}
         />
+        <SuperAiOverlay
+          cards={participant.peer_id === view.activeGroup[0]?.peer_id ? superAiCards.cards : []}
+          source={superAiCards.source}
+          flip={videoFlip(view, participant)}
+        />
+        {participant.peer_id === view.activeGroup[0]?.peer_id &&
+          participant.peer_id !== view.localParticipant.peer_id && (
+            <Button
+              type="button"
+              variant={superAiEnabled ? "default" : "secondary"}
+              size="sm"
+              className="absolute top-3 right-3 z-10 shadow-lg"
+              aria-pressed={superAiEnabled}
+              aria-label={`${superAiEnabled ? "Turn off" : "Turn on"} Super AI`}
+              onClick={onToggleSuperAi}
+            >
+              <Sparkles className="size-4" aria-hidden="true" />
+              Super AI {superAiEnabled ? "on" : "off"}
+            </Button>
+          )}
         <BoardCardTray
           participant={participant}
           cards={room.identifiedCards}
@@ -187,11 +215,17 @@ export function TableStage({
   view,
   flow,
   videoStats,
+  superAiCards,
+  superAiEnabled,
+  onToggleSuperAi,
 }: {
   ref?: Ref<HTMLElement>
   view: TableView
   flow: CardIdentificationFlow
   videoStats: ReturnType<typeof useVideoStats>
+  superAiCards: { cards: SuperAiOverlayCard[]; source: { width: number; height: number } | null }
+  superAiEnabled: boolean
+  onToggleSuperAi: () => void
 }) {
   const { room } = view
   return (
@@ -232,6 +266,9 @@ export function TableStage({
               view={view}
               participant={participant}
               flow={flow}
+              superAiCards={superAiCards}
+              superAiEnabled={superAiEnabled}
+              onToggleSuperAi={onToggleSuperAi}
             />
           ))
         )}

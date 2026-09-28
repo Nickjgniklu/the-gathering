@@ -1,4 +1,4 @@
-import { useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import type { PublisherQuality } from "./media-policy"
 import { useRoomLink } from "./room-link"
 import type { IdentifiedCard } from "./room-types"
@@ -7,6 +7,7 @@ import { useCardCapture } from "./use-card-capture"
 import { useLocalCamera } from "./use-local-camera"
 import { usePeerConnections } from "./use-peer-connections"
 import { useRoomChannel } from "./use-room-channel"
+import { useSuperAi } from "./use-super-ai"
 import { useTableGameState } from "./use-table-game-state"
 
 export type {
@@ -30,6 +31,7 @@ export function useWebcamRoom(
   deviceId = "",
   quality: PublisherQuality = "auto",
   cameraEnabled = true,
+  onSuperAiFrame?: (frame: { bytes: Uint8Array; width: number; height: number }) => Promise<void>,
 ) {
   const link = useRoomLink()
   const [status, setStatus] = useState("Opening 1080p camera…")
@@ -37,6 +39,11 @@ export function useWebcamRoom(
   const camera = useLocalCamera(link, deviceId, cameraEnabled)
   const peers = usePeerConnections(link, camera, quality, setError)
   const captures = useCardCapture(link, playerId, camera, peers, setStatus)
+  const superAiFrameRef = useRef(onSuperAiFrame)
+  useEffect(() => {
+    superAiFrameRef.current = onSuperAiFrame
+  }, [onSuperAiFrame])
+  const superAi = useSuperAi(link, camera, peers, async (frame) => superAiFrameRef.current?.(frame))
   const cards = useBoardCards(link)
   const game = useTableGameState(link, playerId, setError)
   // Set while this seat ends the table, so its own `table_closed` is not reported back to it.
@@ -71,10 +78,12 @@ export function useWebcamRoom(
     },
     onChannelError() {
       captures.cancelAll()
+      superAi.cancel()
       peers.reset()
     },
     onClosed() {
       captures.cancelAll()
+      superAi.cancel()
       setStatus("This table has ended.")
       // The seat that ended it navigates on its own; everyone else is told.
       if (!endingRef.current) setClosedByOwner(true)
@@ -150,6 +159,7 @@ export function useWebcamRoom(
     revealBusy: peers.revealBusy,
     changeReveal: peers.changeReveal,
     capture: captures.capture,
+    superAi,
     identifiedCards: cards.identifiedCards,
     status,
     error,

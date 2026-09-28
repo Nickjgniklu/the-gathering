@@ -1,0 +1,83 @@
+{
+  "version": "2026-09-26-table-a-pretrained-gpu-final",
+  "created": "2026-09-26T21:32:22+00:00",
+  "checkpoint": {
+    "path": "data\\runs\\table-a-pretrained-gpu\\best.pt",
+    "sha256": "0e1a52c1fcbaff784eb441cbebae1b0f9f2e9e112262ceef19dc8f898a1f28e6",
+    "run_args": {
+      "manifest_dir": "H:\\the-gathering-cardid\\table-scenes",
+      "run": "table-a-pretrained-gpu",
+      "epochs": 120,
+      "batch": 32,
+      "lr": 0.001,
+      "backbone_lr": 0.0003,
+      "pose_weight": 1.0,
+      "up_weight": 1.0,
+      "input_size": 384,
+      "pretrained": true,
+      "train_limit": null,
+      "val_limit": 150,
+      "score_threshold": 0.3,
+      "resume": "C:/Users/nickj/AppData/Local/Temp/gpu-resume-checkpoints/pretrained-snapshot.pt",
+      "device": "cuda",
+      "workers": 2,
+      "threads": null,
+      "seed": 0
+    },
+    "training_history": {
+      "epoch": 119,
+      "loss": 0.006663576326268242,
+      "loss_heat": 0.0006869550113302262,
+      "loss_pose": 0.0055706371692691575,
+      "loss_up": 0.0004059841929820371,
+      "seconds": 49.2,
+      "recall": 0.9576763485477179,
+      "precision": 0.9991341991341991,
+      "n_truth": 1205,
+      "n_found": 1155
+    }
+  },
+  "contract": {
+    "input": {
+      "name": "table",
+      "shape": [
+        384,
+        384,
+        4
+      ],
+      "dtype": "uint8",
+      "layout": "HWC RGBA"
+    },
+    "outputs": [
+      {
+        "name": "quads",
+        "shape": [
+          40,
+          4,
+          2
+        ],
+        "dtype": "float32",
+        "units": "input pixels, printed order (corner 0 = top-left)"
+      },
+      {
+        "name": "scores",
+        "shape": [
+          40
+        ],
+        "dtype": "float32",
+        "units": "sigmoid probability, descending; apply your own threshold"
+      }
+    ],
+    "table_input": 384,
+    "table_stride": 4,
+    "max_detections": 40,
+    "recommended_score_threshold": 0.3
+  },
+  "opset": 17,
+  "files": {
+    "table_detector.onnx": {
+      "bytes": 3990754,
+      "sha256": "04f0571e5ca9c9f627131dda131a3fff6b0d2838bebd856b7e60e7f4a53e28e1"
+    }
+  }
+}

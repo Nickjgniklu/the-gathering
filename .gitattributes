@@ -1,0 +1,3 @@
+# Shell scripts run inside Linux containers; a CRLF checkout (Windows `core.autocrlf=true`)
+# breaks their shebang line ("no such file or directory") when Docker copies them in.
+*.sh text eol=lf

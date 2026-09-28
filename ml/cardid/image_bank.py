@@ -67,6 +67,11 @@ class ImageBank:
             return
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(f".{os.getpid()}.tmp.npy")  # per process, in case workers race
+        self._decode_into(tmp, threads)
+        tmp.replace(self.path)  # `_decode_into`'s memmap is out of scope by now: Windows
+        # refuses to rename a file that is still memory-mapped in this process.
+
+    def _decode_into(self, tmp: Path, threads: int) -> None:
         mm = np.lib.format.open_memmap(tmp, mode="w+", dtype=np.uint8, shape=(len(self.paths), *self.shape, 3))
         h, w = self.shape
 
@@ -86,7 +91,6 @@ class ImageBank:
         with ThreadPoolExecutor(threads) as pool:  # cv2 releases the GIL while decoding
             list(tqdm(pool.map(decode, range(len(self.paths))), total=len(self.paths), desc=f"caching {self.path.name}", leave=False))
         mm.flush()
-        tmp.replace(self.path)
 
 
 class CardBank(ImageBank):

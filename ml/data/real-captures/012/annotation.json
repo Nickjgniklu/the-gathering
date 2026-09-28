@@ -1,0 +1,93 @@
+{
+  "source": "localhost:8081 MJPEG stream, real desk capture",
+  "note": "3 cards, auto-localized via diff against a clean-desk reference (see real_capture_diff.py) with manual correction for touching/low-contrast cards; corners approximate (+/-10-20px), not training-grade precision.",
+  "width": 4032,
+  "height": 3024,
+  "cards": [
+    {
+      "id": "012-0",
+      "quad": [
+        [
+          922.246826171875,
+          2195.713134765625
+        ],
+        [
+          982.427490234375,
+          1827.942626953125
+        ],
+        [
+          1492.036376953125,
+          1911.333251953125
+        ],
+        [
+          1431.855712890625,
+          2279.103759765625
+        ]
+      ]
+    },
+    {
+      "id": "012-1",
+      "quad": [
+        [
+          1132.1524658203125,
+          1315.3419189453125
+        ],
+        [
+          1204.0650634765625,
+          826.8790893554688
+        ],
+        [
+          1555.6583251953125,
+          878.6414794921875
+        ],
+        [
+          1483.7457275390625,
+          1367.104248046875
+        ]
+      ]
+    },
+    {
+      "id": "012-2",
+      "quad": [
+        [
+          1698,
+          1928
+        ],
+        [
+          2105,
+          2055
+        ],
+        [
+          1970,
+          2315
+        ],
+        [
+          1585,
+          2170
+        ]
+      ]
+    }
+  ],
+  "negatives": [
+    {
+      "kind": "round_object",
+      "box": [
+        0,
+        100,
+        220,
+        660
+      ],
+      "note": "dice pile, top-left"
+    },
+    {
+      "kind": "clutter",
+      "box": [
+        0,
+        1100,
+        760,
+        1980
+      ],
+      "note": "deck box, left edge (specular highlight false-positived repeatedly)"
+    }
+  ]
+}

@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from "vite-plus/test"
 import type { BundleInfo, WorkerRequest, WorkerResponse } from "./messages"
+import type { Quad } from "./pipeline"
 
 const runtime = vi.hoisted(() => ({ create: vi.fn() }))
 vi.mock("onnxruntime-web/wasm", () => ({
@@ -132,4 +133,108 @@ it.each([
     id: 7,
     result: { candidates: [back, front] },
   })
+})
+
+it("loads a detection-only bundle and scans a table without any identity graphs", async () => {
+  const quads = new Float32Array(40 * 4 * 2)
+  // One real card at model-space (96,96)-(192,192); everything past index 0 is sorted padding.
+  quads.set([96, 96, 192, 96, 192, 192, 96, 192], 0)
+  const scores = new Float32Array(40)
+  scores[0] = 0.9
+  const tableDetector = vi
+    .fn()
+    .mockResolvedValue({ quads: { data: quads }, scores: { data: scores } })
+  runtime.create.mockResolvedValue({ run: tableDetector })
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => new Response(Uint8Array.from([1]))),
+  )
+  const messages: WorkerResponse[] = []
+  const worker: {
+    postMessage: (message: WorkerResponse) => void
+    onmessage?: (event: { data: WorkerRequest }) => Promise<void>
+  } = {
+    postMessage: (message) => messages.push(message),
+  }
+  vi.stubGlobal("self", worker)
+  await import("./recognizer.worker")
+  const bundle: BundleInfo = {
+    version: "table-only",
+    created: "test",
+    files: { "table_detector.onnx": "table_detector.onnx" },
+  }
+  await worker.onmessage!({ data: { type: "load", bundle } })
+  expect(messages[0]).toMatchObject({ type: "ready", version: "table-only", arts: 0 })
+  // The warm-up call during load already exercised the graph once.
+  expect(tableDetector).toHaveBeenCalledTimes(1)
+
+  await worker.onmessage!({
+    data: {
+      type: "detect_table",
+      id: 3,
+      rgba: new ArrayBuffer(200 * 100 * 4),
+      width: 200,
+      height: 100,
+    },
+  })
+  expect(tableDetector).toHaveBeenCalledTimes(2)
+  const response = messages[1]
+  expect(response?.type).toBe("table_detected")
+  if (response?.type !== "table_detected") throw new Error("unreachable")
+  // Detected in the 384x384 model space, then mapped back to the 200x100 source frame.
+  expect(response.result.cards).toHaveLength(1)
+  expect(response.result.cards[0]?.quad).toEqual([
+    [50, 0],
+    [100, 0],
+    [100, 50],
+    [50, 50],
+  ])
+  expect(response.result.cards[0]?.score).toBeCloseTo(0.9)
+
+  await worker.onmessage!({
+    data: { type: "identify", id: 4, rgba: new ArrayBuffer(16), width: 2, height: 2, x: 1, y: 1 },
+  })
+  expect(messages[2]).toMatchObject({
+    type: "identify_failed",
+    id: 4,
+    message: "card identification unavailable (embedding model not published yet)",
+  })
+})
+
+it("suppresses overlapping full-frame proposals by confidence", async () => {
+  const worker = { postMessage: vi.fn() }
+  vi.stubGlobal("self", worker)
+  const { nonMaximumSuppression, quadIou } = await import("./recognizer.worker")
+  const first = {
+    quad: [
+      [0, 0],
+      [10, 0],
+      [10, 10],
+      [0, 10],
+    ] as Quad,
+    confidence: 0.6,
+  }
+  const overlapping = {
+    quad: [
+      [1, 1],
+      [11, 1],
+      [11, 11],
+      [1, 11],
+    ] as Quad,
+    confidence: 0.9,
+  }
+  const separate = {
+    quad: [
+      [20, 20],
+      [30, 20],
+      [30, 30],
+      [20, 30],
+    ] as Quad,
+    confidence: 0.7,
+  }
+  expect(quadIou(first.quad, overlapping.quad)).toBeCloseTo(81 / 119)
+  expect(nonMaximumSuppression([first, overlapping, separate], 0.45)).toEqual([
+    overlapping,
+    separate,
+  ])
 })

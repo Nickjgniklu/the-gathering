@@ -59,6 +59,77 @@ export interface RgbaImage {
   height: number
 }
 
+/** `table_detector.onnx`'s fixed contract (`ml/cardid/table_detector.py`): a dense, single-pass
+ * detector over a square input, trained on synthetic scenes that were always rendered square.
+ * A camera frame rarely is, so it must be letterboxed — not stretched — into that square, or
+ * every card's apparent aspect ratio skews with the frame's. */
+export const TABLE_DETECTOR_INPUT = 384
+export const TABLE_DETECTOR_MAX_DETECTIONS = 40
+/** Below this, `scores` is sorted padding rather than a real (if low-confidence) card. */
+export const TABLE_DETECTOR_MIN_SCORE = 0.3
+
+export interface LetterboxTransform {
+  scale: number
+  offsetX: number
+  offsetY: number
+}
+
+/** Fits `image` into a `size`×`size` square, preserving aspect ratio and padding with opaque
+ * black. Bilinear with edge replication, mirroring `resampleWindow`'s resampling. */
+export function letterboxToSquare(
+  image: RgbaImage,
+  size: number,
+): { input: RgbaImage; transform: LetterboxTransform } {
+  const scale = Math.min(size / image.width, size / image.height)
+  const width = Math.max(1, Math.round(image.width * scale))
+  const height = Math.max(1, Math.round(image.height * scale))
+  const offsetX = Math.floor((size - width) / 2)
+  const offsetY = Math.floor((size - height) / 2)
+  const { data: src, width: srcWidth, height: srcHeight } = image
+  const maxX = srcWidth - 1
+  const maxY = srcHeight - 1
+  const data = new Uint8ClampedArray(size * size * 4)
+  for (let i = 3; i < data.length; i += 4) data[i] = 255
+  for (let j = 0; j < height; j += 1) {
+    const sy = (j + 0.5) / scale - 0.5
+    const y0 = Math.min(maxY, Math.max(0, Math.floor(sy)))
+    const y1 = Math.min(maxY, y0 + 1)
+    const fy = Math.min(1, Math.max(0, sy - y0))
+    for (let i = 0; i < width; i += 1) {
+      const sx = (i + 0.5) / scale - 0.5
+      const x0 = Math.min(maxX, Math.max(0, Math.floor(sx)))
+      const x1 = Math.min(maxX, x0 + 1)
+      const fx = Math.min(1, Math.max(0, sx - x0))
+      const p00 = (y0 * srcWidth + x0) * 4
+      const p01 = (y0 * srcWidth + x1) * 4
+      const p10 = (y1 * srcWidth + x0) * 4
+      const p11 = (y1 * srcWidth + x1) * 4
+      const w00 = (1 - fx) * (1 - fy)
+      const w01 = fx * (1 - fy)
+      const w10 = (1 - fx) * fy
+      const w11 = fx * fy
+      const dst = ((j + offsetY) * size + (i + offsetX)) * 4
+      for (let c = 0; c < 3; c += 1) {
+        data[dst + c] = Math.round(
+          (src[p00 + c] ?? 0) * w00 +
+            (src[p01 + c] ?? 0) * w01 +
+            (src[p10 + c] ?? 0) * w10 +
+            (src[p11 + c] ?? 0) * w11,
+        )
+      }
+    }
+  }
+  return { input: { data, width: size, height: size }, transform: { scale, offsetX, offsetY } }
+}
+
+/** Maps a quad from `letterboxToSquare`'s output square back to the original image's pixels. */
+export function unletterboxQuad(quad: Quad, transform: LetterboxTransform): Quad {
+  return quad.map(([x, y]) => [
+    (x - transform.offsetX) / transform.scale,
+    (y - transform.offsetY) / transform.scale,
+  ]) as Quad
+}
+
 /**
  * The `side` px square around (cx, cy) resampled to a `size` px RGBA square, bilinear with
  * edge replication, plus the scale s so that window = s * (image - (cx, cy)) + size / 2.
