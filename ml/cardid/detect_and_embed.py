@@ -31,7 +31,9 @@ so this composes the canonical-card warp and the frame-window crop into one pixe
 grid and does the whole thing in a single `grid_sample`, skipping the intermediate 250x350
 canonical card image `warp_card` materialises.
 
-    uv run python -m cardid.detect_and_embed compare --table-checkpoint data/runs/<run>/best.pt --embed-checkpoint data/runs/<run>/best.pt
+See `ml/detect-and-embed-guide.md` for the full API contract, construction recipes for both
+detector variants, the ONNX export recipe, and -- important before wiring this to a real gallery
+search -- why this module's embedding output isn't yet compatible with `search.onnx` as-is.
 """
 
 from __future__ import annotations
