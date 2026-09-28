@@ -111,12 +111,30 @@ class DetectAndEmbed(nn.Module):
     scores (N,MAX_CARDS), quads (N,MAX_CARDS,4,2)) -- `MAX_CARDS` fixed slots per image, sorted
     by score, in the *same* full-image pixel coordinates `decode_detections` would use."""
 
-    def __init__(self, table_checkpoint: str, embed_checkpoint: str, native_size: int, max_cards: int = MAX_CARDS):
+    def __init__(
+        self,
+        embed_checkpoint: str,
+        native_size: int,
+        max_cards: int = MAX_CARDS,
+        table_checkpoint: str | None = None,
+        detector: nn.Module | None = None,
+    ):
+        """Either pass `table_checkpoint` (builds a plain, single-pass `TableCenterNet`, the
+        original behaviour) or pass a pre-built `detector` module directly -- e.g. a
+        `tiled_fusion.TiledFusionDetector` -- to swap in the tiled/fused detection path instead.
+        Any `detector` must return (heat logits, pose, up) at stride `TABLE_STRIDE` (true for
+        both `TableCenterNet` and `TiledFusionDetector`, since the latter keeps the same physical
+        stride, just over a larger canonical grid) given `native_size`-square images."""
         super().__init__()
         self.native_size = native_size
         self.max_cards = max_cards
-        self.table = TableCenterNet(pretrained=False)
-        self.table.load_state_dict(torch.load(table_checkpoint, map_location="cpu", weights_only=True))
+        if detector is not None:
+            self.table = detector
+        else:
+            if table_checkpoint is None:
+                raise ValueError("pass either table_checkpoint or detector")
+            self.table = TableCenterNet(pretrained=False)
+            self.table.load_state_dict(torch.load(table_checkpoint, map_location="cpu", weights_only=True))
         self.embed = Embedder(pretrained=False)
         self.embed.load_state_dict(torch.load(embed_checkpoint, map_location="cpu", weights_only=True))
         for m in (self.table, self.embed):
