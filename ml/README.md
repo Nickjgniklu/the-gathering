@@ -977,6 +977,13 @@ crop layer, so one forward pass produces every detected card's identifying embed
 instead of a per-card round trip. Both combinations export to ONNX cleanly and match the torch
 model to floating-point noise (verified for both).
 
+Deliberately one combined graph, not the detector+crop and embedder exported separately: the
+tradeoff is that `cardid.nightly`'s embedder retrain loop, which today just drops a freshly
+retrained `embed.onnx` into a bundle, would instead need to re-run the *combined* export (the same
+frozen detector checkpoint + the newly retrained embedder) before publishing -- a heavier
+packaging step nightly, not more training; the detector side stays exactly as untouched by nightly
+retraining as it already was.
+
 **Both are kept long-term, not one replacing the other** -- they serve different use cases:
 
 - **Single-pass** (`table_a_*`/`repro-a-*` checkpoints, `TABLE_INPUT`=384 input): fast, low-latency,
