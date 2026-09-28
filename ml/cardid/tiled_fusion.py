@@ -27,6 +27,18 @@ tile instead crops roughly 356px of that same 640px image and *upscales* it to 3
 real resolution gain per card, and the training data already has enough headroom for this without
 regenerating anything.
 
+A checkpoint trained at a larger `native_size` needs its own `--score-threshold` recalibration
+before comparing it to anything else, not just a different `FusionHead` (see class docstring):
+`tiled-fusion-1920` (trained on 1920x1920 real-webcam-resolution data, `data/runs/tiled-fusion-1920`)
+scored recall 78.7%/precision 94.4% at the project's usual fixed threshold 0.3 on the 108-card
+real-capture golden set -- worse-recall-but-better-precision than every other approach, looking
+like a real tradeoff. A threshold sweep (cheap, no retraining) found its raw confidence scores are
+simply scaled differently at the bigger 480x480 canonical grid than the 96x96/160x160 grids 0.3
+was ever tuned against: at threshold 0.15-0.16 it scores recall 89.8%/precision 89.8%, beating
+every other approach on *both* measures at once (previous best: recall 87.0%/precision 87.9%,
+`tiled_inference.py`'s heuristic dedupe). Always re-sweep `--score-threshold` on the golden set
+before judging a newly-trained-resolution checkpoint against an established one.
+
     uv run python -m cardid.train_tiled_fusion --checkpoint data/runs/<run>/best.pt --manifest-dir ~/the-gathering-cardid/table-scenes
 """
 
