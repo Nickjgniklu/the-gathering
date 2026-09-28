@@ -18,6 +18,8 @@ import { decksFor, useTableView } from "./table-view"
 import { useCameraRailWidth } from "./use-camera-rail-width"
 import { useCardIdentificationFlow } from "./use-card-identification-flow"
 import { useCorrectionUpload } from "./use-correction-upload"
+import { SuperAiCardSearch } from "./super-ai-card-search"
+import { useSuperAiCorrections } from "./super-ai-corrections"
 import { decodeJpeg } from "./recognition/use-recognizer"
 import { useRoomHotkeys } from "./use-room-hotkeys"
 import { useSeatDecklists } from "./seat-decklists"
@@ -130,6 +132,14 @@ function LiveRoom({ roomId, playerId, playerName, decks }: LiveRoomProps) {
     blocked: dialog?.kind === "help" || dialog?.kind === "finish",
   })
   const superAiTarget = view.activeGroup[0]?.peer_id
+  const superAiCorrections = useSuperAiCorrections(roomId, room.peerId, superAiTarget)
+  const [correctingSuperAiCard, setCorrectingSuperAiCard] = useState<SuperAiOverlayCard | null>(
+    null,
+  )
+  const correctedSuperAiCards = {
+    ...superAiCards,
+    cards: superAiCorrections.apply(superAiCards.cards),
+  }
   useEffect(() => {
     superAiFrameHandler.current = async (frame) => {
       const controller = superAiAbortRef.current
@@ -138,7 +148,7 @@ function LiveRoom({ roomId, playerId, playerName, decks }: LiveRoomProps) {
       const image = await decodeJpeg(new Blob([frame.bytes.buffer], { type: "image/jpeg" }))
       const result = await flow.recognizer.identifyFrame(
         image,
-        { minMatchConfidence: 0 },
+        { minMatchConfidence: preferences.superAiMinMatchConfidence },
         AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)]),
       )
       if (controller.signal.aborted || superAiTargetRef.current !== frame.peerId) return
@@ -155,7 +165,11 @@ function LiveRoom({ roomId, playerId, playerName, decks }: LiveRoomProps) {
     return () => {
       superAiFrameHandler.current = async () => {}
     }
-  }, [flow.recognizer.identifyFrame, preferences.superAiMargin])
+  }, [
+    flow.recognizer.identifyFrame,
+    preferences.superAiMargin,
+    preferences.superAiMinMatchConfidence,
+  ])
   const { request: requestSuperAi, cancel: cancelSuperAi } = room.superAi
   const requestSuperAiRef = useRef(requestSuperAi)
   const cancelSuperAiRef = useRef(cancelSuperAi)
@@ -246,10 +260,22 @@ function LiveRoom({ roomId, playerId, playerName, decks }: LiveRoomProps) {
         view={view}
         flow={flow}
         videoStats={videoStats}
-        superAiCards={superAiCards}
+        superAiCards={correctedSuperAiCards}
         superAiEnabled={preferences.superAi}
         showSuperAiDetections={preferences.superAiShowDetections}
         onToggleSuperAi={() => preferences.update({ superAi: !preferences.superAi })}
+        onWrongSuperAiCard={setCorrectingSuperAiCard}
+        onNotSuperAiCard={superAiCorrections.hide}
+      />
+
+      <SuperAiCardSearch
+        open={correctingSuperAiCard !== null}
+        onOpenChange={(open) => !open && setCorrectingSuperAiCard(null)}
+        onSearch={flow.recognizer.search}
+        onChoose={(art) => {
+          if (correctingSuperAiCard) superAiCorrections.replace(correctingSuperAiCard, art)
+          setCorrectingSuperAiCard(null)
+        }}
       />
 
       {panelOpen ? (

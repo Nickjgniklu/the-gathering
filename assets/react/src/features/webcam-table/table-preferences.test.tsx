@@ -139,14 +139,16 @@ it("persists view, camera, stats and sound choices without accepting malformed v
   })
 })
 
-it("defaults and persists the Super AI required lead", () => {
+it("defaults and persists the Super AI match filters", () => {
   const first = renderHook(() => useTablePreferences(5))
   expect(first.result.current.superAiMargin).toBe(0.08)
+  expect(first.result.current.superAiMinMatchConfidence).toBe(0.6)
   expect(first.result.current.superAiShowDetections).toBe(false)
   expect(first.result.current.superAiScanIntervalSeconds).toBe(5)
   act(() =>
     first.result.current.update({
       superAiMargin: 0,
+      superAiMinMatchConfidence: 0.7,
       superAiShowDetections: true,
       superAiScanIntervalSeconds: 1,
     }),
@@ -155,12 +157,19 @@ it("defaults and persists the Super AI required lead", () => {
   const next = renderHook(() => useTablePreferences(5))
   expect(next.result.current).toMatchObject({
     superAiMargin: 0,
+    superAiMinMatchConfidence: 0.7,
     superAiShowDetections: true,
     superAiScanIntervalSeconds: 1,
   })
 })
 
-it("clamps an out-of-range saved Super AI lead", () => {
-  localStorage.setItem("the-gathering:table-preferences:6", JSON.stringify({ superAiMargin: 5 }))
-  expect(renderHook(() => useTablePreferences(6)).result.current.superAiMargin).toBe(0.2)
+it("clamps out-of-range saved Super AI match filters", () => {
+  localStorage.setItem(
+    "the-gathering:table-preferences:6",
+    JSON.stringify({ superAiMargin: 5, superAiMinMatchConfidence: -1 }),
+  )
+  expect(renderHook(() => useTablePreferences(6)).result.current).toMatchObject({
+    superAiMargin: 0.2,
+    superAiMinMatchConfidence: 0,
+  })
 })

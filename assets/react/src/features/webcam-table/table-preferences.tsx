@@ -5,6 +5,9 @@ import {
   SUPER_AI_MARGIN_DEFAULT,
   SUPER_AI_MARGIN_MAX,
   SUPER_AI_MARGIN_MIN,
+  SUPER_AI_MATCH_CONFIDENCE_DEFAULT,
+  SUPER_AI_MATCH_CONFIDENCE_MAX,
+  SUPER_AI_MATCH_CONFIDENCE_MIN,
   SUPER_AI_SCAN_INTERVAL_DEFAULT_SECONDS,
   SUPER_AI_SCAN_INTERVAL_MAX_SECONDS,
   SUPER_AI_SCAN_INTERVAL_MIN_SECONDS,
@@ -33,6 +36,8 @@ interface Preferences {
   superAi: boolean
   /** Minimum lead over runner-up before a scanned card gets gallery art overlaid on it. */
   superAiMargin: number
+  /** Minimum score for the best card classification to be shown. */
+  superAiMinMatchConfidence: number
   /** How often this viewer requests a fresh Super AI board scan. */
   superAiScanIntervalSeconds: number
   /** Draw raw table-detector proposals, including those without a confident identity match. */
@@ -79,6 +84,7 @@ export function useTablePreferences(playerId: number) {
       turnSound: true,
       superAi: false,
       superAiMargin: SUPER_AI_MARGIN_DEFAULT,
+      superAiMinMatchConfidence: SUPER_AI_MATCH_CONFIDENCE_DEFAULT,
       superAiScanIntervalSeconds: SUPER_AI_SCAN_INTERVAL_DEFAULT_SECONDS,
       superAiShowDetections: false,
       keepTrayOpen: false,
@@ -103,6 +109,13 @@ export function useTablePreferences(playerId: number) {
           "superAiMargin" in saved && typeof saved.superAiMargin === "number"
             ? Math.max(SUPER_AI_MARGIN_MIN, Math.min(SUPER_AI_MARGIN_MAX, saved.superAiMargin))
             : defaults.superAiMargin,
+        superAiMinMatchConfidence:
+          "superAiMinMatchConfidence" in saved && typeof saved.superAiMinMatchConfidence === "number"
+            ? Math.max(
+                SUPER_AI_MATCH_CONFIDENCE_MIN,
+                Math.min(SUPER_AI_MATCH_CONFIDENCE_MAX, saved.superAiMinMatchConfidence),
+              )
+            : defaults.superAiMinMatchConfidence,
         superAiScanIntervalSeconds:
           "superAiScanIntervalSeconds" in saved &&
           typeof saved.superAiScanIntervalSeconds === "number"

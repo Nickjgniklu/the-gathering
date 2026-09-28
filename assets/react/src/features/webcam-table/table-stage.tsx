@@ -33,6 +33,8 @@ function StageBoard({
   superAiEnabled,
   showSuperAiDetections,
   onToggleSuperAi,
+  onWrongSuperAiCard,
+  onNotSuperAiCard,
 }: {
   view: TableView
   participant: TableParticipant
@@ -45,6 +47,8 @@ function StageBoard({
   superAiEnabled: boolean
   showSuperAiDetections: boolean
   onToggleSuperAi: () => void
+  onWrongSuperAiCard: (card: SuperAiOverlayCard) => void
+  onNotSuperAiCard: (card: SuperAiOverlayCard) => void
 }) {
   const { room, preferences } = view
   return (
@@ -98,6 +102,8 @@ function StageBoard({
           }
           source={superAiCards.source}
           flip={videoFlip(view, participant)}
+          onWrongCard={onWrongSuperAiCard}
+          onNotCard={onNotSuperAiCard}
         />
         {participant.peer_id === view.activeGroup[0]?.peer_id && (
           <Button
@@ -131,6 +137,8 @@ function StageBoard({
           }
           defaultExpanded={preferences.keepTrayOpen && preferences.trayOpen}
           onExpandedChange={(trayOpen) => preferences.update({ trayOpen })}
+          onWrongSuperAiCard={onWrongSuperAiCard}
+          onNotSuperAiCard={onNotSuperAiCard}
         />
       </div>
       <SeatActions view={view} participant={participant} size="board" />
@@ -242,6 +250,8 @@ export function TableStage({
   superAiEnabled,
   showSuperAiDetections,
   onToggleSuperAi,
+  onWrongSuperAiCard,
+  onNotSuperAiCard,
 }: {
   ref?: Ref<HTMLElement>
   view: TableView
@@ -255,6 +265,8 @@ export function TableStage({
   superAiEnabled: boolean
   showSuperAiDetections: boolean
   onToggleSuperAi: () => void
+  onWrongSuperAiCard: (card: SuperAiOverlayCard) => void
+  onNotSuperAiCard: (card: SuperAiOverlayCard) => void
 }) {
   const { room } = view
   return (
@@ -299,6 +311,8 @@ export function TableStage({
               superAiEnabled={superAiEnabled}
               showSuperAiDetections={showSuperAiDetections}
               onToggleSuperAi={onToggleSuperAi}
+              onWrongSuperAiCard={onWrongSuperAiCard}
+              onNotSuperAiCard={onNotSuperAiCard}
             />
           ))
         )}

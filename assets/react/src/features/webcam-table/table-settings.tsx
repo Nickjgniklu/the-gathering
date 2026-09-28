@@ -10,6 +10,8 @@ import { describeRecognizer } from "./side-panel-labels"
 import {
   SUPER_AI_MARGIN_MAX,
   SUPER_AI_MARGIN_MIN,
+  SUPER_AI_MATCH_CONFIDENCE_MAX,
+  SUPER_AI_MATCH_CONFIDENCE_MIN,
   SUPER_AI_SCAN_INTERVAL_MAX_SECONDS,
   SUPER_AI_SCAN_INTERVAL_MIN_SECONDS,
 } from "./super-ai"
@@ -282,6 +284,29 @@ export function TableSettings({
         </label>
         <p className="mt-1.5 text-[0.65rem] text-base-content/60">
           Choose 1–15 seconds. Faster scans use more CPU and WebRTC bandwidth.
+        </p>
+        <label className="mt-3 block">
+          <span className="flex items-center justify-between text-[0.65rem] text-base-content/60">
+            Minimum card classification confidence
+            <span className="tabular-nums">
+              {Math.round(preferences.superAiMinMatchConfidence * 100)}%
+            </span>
+          </span>
+          <input
+            type="range"
+            className="range range-primary range-xs mt-1.5"
+            min={SUPER_AI_MATCH_CONFIDENCE_MIN}
+            max={SUPER_AI_MATCH_CONFIDENCE_MAX}
+            step={0.01}
+            onChange={(event) =>
+              preferences.update({ superAiMinMatchConfidence: Number(event.target.value) })
+            }
+            value={preferences.superAiMinMatchConfidence}
+            aria-label="Minimum card classification confidence"
+          />
+        </label>
+        <p className="mt-1.5 text-[0.65rem] text-base-content/60">
+          Raise this to hide weak card matches. Set it to 0% to show every classification.
         </p>
         <label className="mt-3 block">
           <span className="flex items-center justify-between text-[0.65rem] text-base-content/60">

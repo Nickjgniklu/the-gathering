@@ -1,9 +1,13 @@
-import { expect, it } from "vite-plus/test"
-import { render, screen } from "@testing-library/react"
+import { afterEach, expect, it, vi } from "vite-plus/test"
+import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 import type { FullFrameIdentification, Identification } from "./recognition/messages"
 import type { Candidate, Quad } from "./recognition/pipeline"
 import { overlayCardsFromScan, stabilizeSuperAiCards } from "./super-ai"
+import { applySuperAiCorrections, quadOverlap } from "./super-ai-corrections"
+import { SuperAiActions } from "./super-ai-actions"
 import { mapSourceQuad, quadTransform, SuperAiArt } from "./super-ai-overlay"
+
+afterEach(cleanup)
 
 const quad = [
   [100, 50],
@@ -134,6 +138,23 @@ it("keeps a matching card in its prior enlarged box and updates a real move", ()
   ])
 })
 
+it("spatially carries hide and replacement corrections across scan jitter and changed answers", () => {
+  const moved = quad.map(([x, y]) => [x + 12, y - 8]) as Quad
+  expect(quadOverlap(quad as unknown as Quad, moved)).toBeGreaterThan(0.7)
+  expect(
+    applySuperAiCorrections(
+      [{ id: "wrong-again", quad: moved }],
+      [{ quad: quad as unknown as Quad, replacementId: "correct" }],
+    ).cards,
+  ).toEqual([{ id: "correct", quad: moved }])
+  expect(
+    applySuperAiCorrections(
+      [{ id: "false-positive", quad: moved }],
+      [{ quad: quad as unknown as Quad, hidden: true }],
+    ).cards,
+  ).toEqual([])
+})
+
 it("renders art as a non-interactive projectively transformed image", () => {
   const transform = "matrix3d(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1)"
   render(<SuperAiArt src="https://cards.example/art.jpg" transform={transform} />)
@@ -141,4 +162,18 @@ it("renders art as a non-interactive projectively transformed image", () => {
   expect(art.getAttribute("src")).toBe("https://cards.example/art.jpg")
   expect(art.style.transform).toBe(transform)
   expect(art.className).toContain("origin-top-left")
+})
+
+it("wires both overlay context actions to its detected region", async () => {
+  const card = { id: "forest", quad: quad as unknown as Quad }
+  const notCard = vi.fn()
+  render(
+    <SuperAiActions card={card} onWrongCard={vi.fn()} onNotCard={notCard}>
+      <button type="button">Overlay art</button>
+    </SuperAiActions>,
+  )
+  fireEvent.contextMenu(screen.getByRole("button", { name: "Overlay art" }))
+  expect(await screen.findByText("Wrong card")).toBeTruthy()
+  fireEvent.click(await screen.findByText("Not a card"))
+  expect(notCard).toHaveBeenCalledWith(card)
 })

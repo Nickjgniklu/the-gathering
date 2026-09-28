@@ -3,6 +3,7 @@ import { useLayoutEffect, useRef, useState } from "react"
 import { getPrintingDetails } from "./card-details"
 import type { Quad } from "./recognition/pipeline"
 import type { SuperAiDetection, SuperAiOverlayCard } from "./super-ai"
+import { SuperAiActions } from "./super-ai-actions"
 
 export interface Size {
   width: number
@@ -49,9 +50,10 @@ export function quadTransform(quad: Quad) {
 export function SuperAiArt({ src, transform }: { src: string; transform: string }) {
   return (
     <img
+      data-super-ai-art
       src={src}
       alt=""
-      className="absolute top-0 left-0 h-px w-px origin-top-left"
+      className="pointer-events-auto absolute top-0 left-0 h-px w-px origin-top-left"
       style={{ transform }}
     />
   )
@@ -167,11 +169,15 @@ export function SuperAiOverlay({
   detections,
   source,
   flip,
+  onWrongCard,
+  onNotCard,
 }: {
   cards: SuperAiOverlayCard[]
   detections: SuperAiDetection[]
   source: Size | null
   flip: ViewerFlip
+  onWrongCard: (card: SuperAiOverlayCard) => void
+  onNotCard: (card: SuperAiOverlayCard) => void
 }) {
   const root = useRef<HTMLDivElement>(null)
   const stage = useSize(root)
@@ -197,7 +203,9 @@ export function SuperAiOverlay({
         if (!transform || !detail?.image_uris.normal) return null
         return (
           <div key={`${card.id}-${index}`}>
-            <SuperAiArt src={detail.image_uris.normal} transform={transform} />
+            <SuperAiActions card={card} onWrongCard={onWrongCard} onNotCard={onNotCard}>
+              <SuperAiArt src={detail.image_uris.normal} transform={transform} />
+            </SuperAiActions>
             <SuperAiOutline quad={quad} name={detail.name} />
           </div>
         )

@@ -4,6 +4,7 @@ import { GameChangerBadge } from "@/components/game-changer-badge"
 import { cn } from "@/lib/cn"
 import { usePrintingDetails, type PrintingDetails } from "./card-details"
 import type { SuperAiOverlayCard } from "./super-ai"
+import { SuperAiActions } from "./super-ai-actions"
 import type { BoardCard, IdentifiedCard, TableParticipant } from "./use-webcam-room"
 
 /** Small card image for one printing, loaded from Scryfall through the server; a grey card
@@ -109,6 +110,8 @@ interface TrayProps {
   /** Open state when this board first appears on the stage. */
   defaultExpanded?: boolean
   onExpandedChange?: (expanded: boolean) => void
+  onWrongSuperAiCard?: (card: SuperAiOverlayCard) => void
+  onNotSuperAiCard?: (card: SuperAiOverlayCard) => void
 }
 
 /** Convoke-style tray docked to the bottom of the active board: a chevron tab that unfolds a
@@ -124,6 +127,8 @@ export function BoardCardTray({
   onClear,
   defaultExpanded = false,
   onExpandedChange,
+  onWrongSuperAiCard,
+  onNotSuperAiCard,
 }: TrayProps) {
   const [expanded, setExpanded] = useState(defaultExpanded)
   const [mode, setMode] = useState<"history" | "scan">("history")
@@ -200,7 +205,23 @@ export function BoardCardTray({
               <ul className="flex gap-2 overflow-x-auto pt-1.5" aria-label="Current Super AI cards">
                 {scanCards.map((card, index) => (
                   <li key={`${card.id}-${index}`} className="w-16 shrink-0 md:w-20">
-                    <SuperAiCardThumb card={card} />
+                    {onWrongSuperAiCard && onNotSuperAiCard ? (
+                      <SuperAiActions
+                        card={card}
+                        onWrongCard={onWrongSuperAiCard}
+                        onNotCard={onNotSuperAiCard}
+                      >
+                        <button
+                          type="button"
+                          className="block w-full"
+                          aria-label="Super AI card actions"
+                        >
+                          <SuperAiCardThumb card={card} />
+                        </button>
+                      </SuperAiActions>
+                    ) : (
+                      <SuperAiCardThumb card={card} />
+                    )}
                   </li>
                 ))}
               </ul>
