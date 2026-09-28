@@ -260,11 +260,11 @@ export function TableSettings({
           checked={preferences.superAi}
           onChange={(superAi) => preferences.update({ superAi })}
         >
-          Super AI board scan
+          Auto-identify cards on the board
         </Toggle>
         <p className="mt-2 text-[0.65rem] text-base-content/60">
-          Requests a full camera frame from the visible board. Frames and card matches stay in the
-          two browsers and are never sent to the server.
+          Requests a full camera frame from the visible board. Frames stay in the two browsers;
+          recognized card IDs are sent to the server only to retrieve card details and art.
         </p>
         <label className="mt-3 block">
           <span className="flex items-center justify-between text-[0.65rem] text-base-content/60">
@@ -281,7 +281,7 @@ export function TableSettings({
               preferences.update({ superAiScanIntervalSeconds: Number(event.target.value) })
             }
             value={preferences.superAiScanIntervalSeconds}
-            aria-label="Super AI board scan frequency"
+            aria-label="Auto-identify board scan frequency"
           />
         </label>
         <p className="mt-1.5 text-[0.65rem] text-base-content/60">
@@ -312,7 +312,7 @@ export function TableSettings({
         </p>
         <label className="mt-3 block">
           <span className="flex items-center justify-between text-[0.65rem] text-base-content/60">
-            Required lead over runner-up
+            Match confidence margin
             <span className="tabular-nums">{Math.round(preferences.superAiMargin * 100)}%</span>
           </span>
           <input
@@ -323,7 +323,7 @@ export function TableSettings({
             step={0.01}
             onChange={(event) => preferences.update({ superAiMargin: Number(event.target.value) })}
             value={preferences.superAiMargin}
-            aria-label="Super AI required match lead"
+            aria-label="Match confidence margin"
           />
         </label>
         <p className="mt-1.5 text-[0.65rem] text-base-content/60">

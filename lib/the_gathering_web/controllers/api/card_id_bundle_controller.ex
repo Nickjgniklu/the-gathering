@@ -28,8 +28,9 @@ defmodule TheGatheringWeb.API.CardIdBundleController do
       files =
         CardId.files()
         |> Enum.filter(
-          &(&1 not in ["printings.json", "table_detector.onnx"] or
-              Map.has_key?(manifest["files"] || %{}, &1))
+          &((&1 not in ["printings.json", "table_detector.onnx"] or
+               Map.has_key?(manifest["files"] || %{}, &1)) and
+              match?({:ok, _}, CardId.file_path(manifest["version"], &1)))
         )
         |> Map.new(fn name ->
           {name, ~p"/api/cardid/bundles/#{manifest["version"]}/#{name}"}

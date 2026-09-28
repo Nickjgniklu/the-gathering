@@ -90,6 +90,7 @@ it("keeps each scanned card's best match and drops cards with no candidates", ()
       scannedCard([]),
     ],
     detections: [],
+    timings: { detector: 0, classify: 0 },
     totalMs: 10,
   }
   expect(overlayCardsFromScan(scan)).toEqual([
@@ -101,6 +102,7 @@ it("shows a one-candidate card as ambiguous so the viewer can choose it", () => 
   const scan: FullFrameIdentification = {
     cards: [scannedCard([candidate("forest")])],
     detections: [],
+    timings: { detector: 0, classify: 0 },
     totalMs: 10,
   }
   expect(overlayCardsFromScan(scan)[0]).toMatchObject({ id: "forest", ambiguous: true })
@@ -110,6 +112,7 @@ it("requires the top candidate to clearly lead and accepts a caller-supplied lea
   const scan: FullFrameIdentification = {
     cards: [scannedCard([candidate("forest"), { ...candidate("island"), score: 0.84 }])],
     detections: [],
+    timings: { detector: 0, classify: 0 },
     totalMs: 10,
   }
   expect(overlayCardsFromScan(scan)[0]).toMatchObject({ id: "forest", ambiguous: true })

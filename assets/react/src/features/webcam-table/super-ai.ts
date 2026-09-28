@@ -73,8 +73,8 @@ export function stabilizeSuperAiCards(
     const matchingIndex = [...available]
       .filter((index) => containsWithMargin(previous[index]!.quad, cardCenter))
       .sort((left, right) => {
-        const [leftX, leftY] = center(previous[left].quad)
-        const [rightX, rightY] = center(previous[right].quad)
+        const [leftX, leftY] = center(previous[left]!.quad)
+        const [rightX, rightY] = center(previous[right]!.quad)
         return (
           (leftX - cardCenter[0]) ** 2 +
           (leftY - cardCenter[1]) ** 2 -

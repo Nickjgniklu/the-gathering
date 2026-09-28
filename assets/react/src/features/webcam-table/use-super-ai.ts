@@ -55,8 +55,14 @@ export function useSuperAi(
   scanIntervalMs = SUPER_AI_SCAN_INTERVAL_MS,
 ) {
   const incomingRef = useRef<Incoming | null>(null)
-  const pendingRef = useRef<{ target: string; requestId: string; timeout: number } | null>(null)
+  const pendingRef = useRef<{
+    target: string
+    requestId: string
+    requestedAt: number
+    timeout: number
+  } | null>(null)
   const recognizingRef = useRef(false)
+  const scanGenerationRef = useRef(0)
   const lastRequestRef = useRef(new Map<string, number>())
   const lastAnsweredRef = useRef(new Map<string, number>())
   const [status, setStatus] = useState<"idle" | "requesting" | "scanning" | "failed">("idle")
@@ -152,6 +158,7 @@ export function useSuperAi(
         return
       setStatus("scanning")
       recognizingRef.current = true
+      const scanGeneration = scanGenerationRef.current
       try {
         await onFrame({
           peerId: fromPeerId,
@@ -160,10 +167,12 @@ export function useSuperAi(
           height: incoming.start.height,
           transferMs: performance.now() - incoming.requestedAt,
         })
-        setLastCompleted(Date.now())
-        setStatus("idle")
+        if (scanGeneration === scanGenerationRef.current) {
+          setLastCompleted(Date.now())
+          setStatus("idle")
+        }
       } catch {
-        setStatus("failed")
+        if (scanGeneration === scanGenerationRef.current) setStatus("failed")
       } finally {
         recognizingRef.current = false
       }
@@ -270,13 +279,18 @@ export function useSuperAi(
         lastRequestRef.current.set(target, now)
         setStatus("scanning")
         recognizingRef.current = true
+        const scanGeneration = scanGenerationRef.current
         const data = bytes(captured.image.slice(captured.image.indexOf(",") + 1))
         onFrame({ peerId: target, bytes: data, width: captured.width, height: captured.height, transferMs: 0 })
           .then(() => {
-            setLastCompleted(Date.now())
-            setStatus("idle")
+            if (scanGeneration === scanGenerationRef.current) {
+              setLastCompleted(Date.now())
+              setStatus("idle")
+            }
           })
-          .catch(() => setStatus("failed"))
+          .catch(() => {
+            if (scanGeneration === scanGenerationRef.current) setStatus("failed")
+          })
           .finally(() => {
             recognizingRef.current = false
           })
@@ -308,6 +322,7 @@ export function useSuperAi(
   )
 
   const cancel = useCallback(() => {
+    scanGenerationRef.current += 1
     clearIncoming()
     clearPending()
     setStatus("idle")

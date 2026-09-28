@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query"
 import { Link, useNavigate } from "@tanstack/react-router"
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react"
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react"
 import { useToast } from "@/components/ui/toast"
 import { getDecks, type DeckSummary } from "@/features/decks/decks"
 import { getPlayers } from "@/features/games/games"
@@ -77,7 +77,13 @@ function TableEndedRedirect() {
 function LiveRoom({ roomId, playerId, playerName, decks }: LiveRoomProps) {
   const preferences = useTablePreferences(playerId)
   const superAiFrameHandler = useRef<
-    (frame: { peerId: string; bytes: Uint8Array; width: number; height: number }) => Promise<void>
+    (frame: {
+      peerId: string
+      bytes: Uint8Array
+      width: number
+      height: number
+      transferMs: number
+    }) => Promise<void>
   >(async () => {})
   const superAiAbortRef = useRef<AbortController | null>(null)
   const superAiTargetRef = useRef<string | null>(null)
@@ -180,8 +186,10 @@ function LiveRoom({ roomId, playerId, playerName, decks }: LiveRoomProps) {
   const { request: requestSuperAi, cancel: cancelSuperAi } = room.superAi
   const requestSuperAiRef = useRef(requestSuperAi)
   const cancelSuperAiRef = useRef(cancelSuperAi)
-  requestSuperAiRef.current = requestSuperAi
-  cancelSuperAiRef.current = cancelSuperAi
+  useLayoutEffect(() => {
+    requestSuperAiRef.current = requestSuperAi
+    cancelSuperAiRef.current = cancelSuperAi
+  }, [cancelSuperAi, requestSuperAi])
   useEffect(() => {
     superAiAbortRef.current?.abort()
     setSuperAiCards({ cards: [], detections: [], source: null })

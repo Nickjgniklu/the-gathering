@@ -122,11 +122,11 @@ function StageBoard({
               isPinned(view, participant) ? "top-12" : "top-3",
             )}
             aria-pressed={superAiEnabled}
-            aria-label={`${superAiEnabled ? "Turn off" : "Turn on"} Super AI`}
+            aria-label={`${superAiEnabled ? "Turn off" : "Turn on"} auto-identify`}
             onClick={onToggleSuperAi}
           >
             <Sparkles className="size-4" aria-hidden="true" />
-            Super AI {superAiEnabled ? "on" : "off"}
+            Auto-identify {superAiEnabled ? "on" : "off"}
           </Button>
         )}
         <BoardCardTray

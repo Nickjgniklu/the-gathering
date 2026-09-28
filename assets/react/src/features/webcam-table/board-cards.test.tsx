@@ -66,8 +66,8 @@ it("wires both Super AI tray context actions to the selected region", async () =
     ],
   } as SuperAiOverlayCard
   tray(undefined, [card], { wrong: vi.fn(), notCard })
-  fireEvent.click(screen.getByRole("tab", { name: "Super AI now" }))
-  fireEvent.contextMenu(screen.getByRole("button", { name: "Super AI card actions" }))
+  fireEvent.click(screen.getByRole("tab", { name: "Auto-identified" }))
+  fireEvent.contextMenu(screen.getByRole("button", { name: "Auto-identified card actions" }))
   expect(await screen.findByText("Wrong card")).toBeTruthy()
   fireEvent.click(await screen.findByText("Not a card"))
   expect(notCard).toHaveBeenCalledWith(card)
@@ -88,10 +88,10 @@ it("switches between click history and the current Super AI scan without adding 
   expect(screen.getByRole("tab", { name: "Click history" }).getAttribute("aria-selected")).toBe(
     "true",
   )
-  fireEvent.click(screen.getByRole("tab", { name: "Super AI now" }))
-  expect(screen.getByRole("tab", { name: "Super AI now" }).getAttribute("aria-selected")).toBe(
+  fireEvent.click(screen.getByRole("tab", { name: "Auto-identified" }))
+  expect(screen.getByRole("tab", { name: "Auto-identified" }).getAttribute("aria-selected")).toBe(
     "true",
   )
-  expect(screen.getByRole("list", { name: "Current Super AI cards" })).toBeTruthy()
+  expect(screen.getByRole("list", { name: "Current auto-identified cards" })).toBeTruthy()
   expect(screen.queryByRole("button", { name: "Clear cards" })).toBeNull()
 })

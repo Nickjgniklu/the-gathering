@@ -24,7 +24,7 @@ export function SuperAiActions({
   controlsStyle,
 }: {
   card: SuperAiOverlayCard
-  children: ReactElement
+  children: ReactElement<{ style?: CSSProperties }>
   onWrongCard: (card: SuperAiOverlayCard) => void
   onNotCard: (card: SuperAiOverlayCard) => void
   onChooseCard?: (card: SuperAiOverlayCard) => void
@@ -39,7 +39,12 @@ export function SuperAiActions({
   return (
     <span className="relative block">
       <DropdownMenu open={open} onOpenChange={setOpen}>
-        <DropdownMenuTrigger asChild>
+        <DropdownMenuTrigger
+          asChild
+          onPointerDown={(event) => {
+            if (event.button === 0) event.preventDefault()
+          }}
+        >
           <span
             onContextMenuCapture={(event: MouseEvent) => {
               event.preventDefault()

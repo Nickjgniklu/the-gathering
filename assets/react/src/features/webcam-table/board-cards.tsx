@@ -196,7 +196,7 @@ export function BoardCardTray({
                 )}
                 onClick={() => setMode("scan")}
               >
-                Super AI now
+                Auto-identified
               </button>
               {onResetSuperAiCards && (
                 <button
@@ -212,10 +212,10 @@ export function BoardCardTray({
           {scanCards !== undefined ? (
             scanCards.length === 0 ? (
               <p className="py-2 text-center text-xs text-white/60">
-                No clear Super AI matches right now.
+                No clear auto-identified matches right now.
               </p>
             ) : (
-              <ul className="flex gap-2 overflow-x-auto pt-1.5" aria-label="Current Super AI cards">
+              <ul className="flex gap-2 overflow-x-auto pt-1.5" aria-label="Current auto-identified cards">
                 {scanCards.map((card, index) => (
                   <li key={`${card.id}-${index}`} className="w-16 shrink-0 md:w-20">
                     {onWrongSuperAiCard && onNotSuperAiCard ? (
@@ -229,7 +229,7 @@ export function BoardCardTray({
                         <button
                           type="button"
                           className="block w-full"
-                          aria-label="Super AI card actions"
+                          aria-label="Auto-identified card actions"
                         >
                           <SuperAiCardThumb card={card} />
                         </button>
