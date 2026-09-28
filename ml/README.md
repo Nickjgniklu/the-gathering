@@ -965,6 +965,53 @@ which does not yet use this.
 uv run python -m cardid.tiled_inference compare --checkpoint data/runs/<run>/best.pt --rows 2 --cols 2
 ```
 
+### Learned tile fusion, and the combined detect+embed pipeline
+
+`tiled_fusion.py` bakes the tiling and overlap-deduping above into the model itself instead of a
+post-hoc script: 4 forward passes of one frozen `TableCenterNet` over overlapping tiles, projected
+onto a shared canonical grid at the *native* image's own resolution, fused by a small trained
+`FusionHead` (~54k params) that replaces `tiled_inference.dedupe`'s greedy IoU-averaging with a
+learned combination. `detect_and_embed.py` then wires a (frozen) detector -- either a plain
+`TableCenterNet` or a `TiledFusionDetector` -- to a (frozen) `Embedder` through a single batched
+crop layer, so one forward pass produces every detected card's identifying embedding directly,
+instead of a per-card round trip. Both combinations export to ONNX cleanly and match the torch
+model to floating-point noise (verified for both).
+
+**Both are kept long-term, not one replacing the other** -- they serve different use cases:
+
+- **Single-pass** (`table_a_*`/`repro-a-*` checkpoints, `TABLE_INPUT`=384 input): fast, low-latency,
+  the right choice for a smaller/focused capture area (e.g. a zoomed-in region) where downsampling
+  cost is low to begin with.
+- **`tiled-fusion-1920`** (`data/runs/tiled-fusion-1920`, trained at 1920x1920 -- matching the
+  deployed webcam's real capture resolution, `camera.ts` requests `{width:1920, height:1080}`):
+  higher accuracy for a full-table scan at that fixed resolution, at ~15x the CPU cost of
+  single-pass (see below) -- a GPU/WebGPU workload, not CPU/WASM.
+
+**`tiled-fusion-1920` needs `--score-threshold 0.15-0.16`, not the project's usual 0.3.** Its
+bigger 480x480 canonical grid produces confidence scores on a different scale than the
+96x96/160x160 grids 0.3 was ever tuned against; at 0.3 it looked like a real precision/recall
+tradeoff against every other approach (recall 78.7%/precision 94.4%, vs. single-pass's
+87.0%/84.7%). A threshold sweep (cheap, no retraining -- cache the model's raw output once, decode
+at many thresholds) found the real operating point: **recall 89.8%/precision 89.8%, beating every
+other approach -- single-pass, the heuristic dedupe, and `tiled-fusion-640` -- on both measures at
+once.** Always re-sweep threshold on the golden set before judging a newly-trained-resolution
+checkpoint against an established one; it is not comparable at another checkpoint's threshold.
+
+Native PyTorch latency on one desktop (CPU: 4 threads; GPU: RX 7900 GRE via ROCm) -- a rough
+proxy for relative cost, not the deployed onnxruntime-web (WASM/WebGPU) number a viewer's browser
+would see:
+
+| | CPU | GPU |
+|---|---|---|
+| single-pass detector (384x384) | 10.7 ms | 5.3 ms |
+| tiled-fusion detector (1920x1920, 4 tiles) | 162.2 ms | 8.5 ms |
+| full detect+embed, single-pass | 28.7 ms | -- |
+| full detect+embed, tiled-fusion (1920x1920) | 198.4 ms | -- |
+
+```sh
+uv run python -m cardid.train_tiled_fusion --manifest-dir ~/the-gathering-cardid/table-scenes-1920 --checkpoint data/runs/<run>/best.pt --native-size 1920
+```
+
 ### Exporting the dense detector for the rest of the app
 
 `export_table_detector.py` exports a `TableCenterNet` checkpoint to a standalone ONNX artifact,
