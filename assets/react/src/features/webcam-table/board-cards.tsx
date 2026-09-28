@@ -112,6 +112,8 @@ interface TrayProps {
   onExpandedChange?: (expanded: boolean) => void
   onWrongSuperAiCard?: (card: SuperAiOverlayCard) => void
   onNotSuperAiCard?: (card: SuperAiOverlayCard) => void
+  onPreviewSuperAiCard?: (card: SuperAiOverlayCard) => void
+  onResetSuperAiCards?: () => void
 }
 
 /** Convoke-style tray docked to the bottom of the active board: a chevron tab that unfolds a
@@ -129,6 +131,8 @@ export function BoardCardTray({
   onExpandedChange,
   onWrongSuperAiCard,
   onNotSuperAiCard,
+  onPreviewSuperAiCard,
+  onResetSuperAiCards,
 }: TrayProps) {
   const [expanded, setExpanded] = useState(defaultExpanded)
   const [mode, setMode] = useState<"history" | "scan">("history")
@@ -194,6 +198,15 @@ export function BoardCardTray({
               >
                 Super AI now
               </button>
+              {onResetSuperAiCards && (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-xs text-white/75"
+                  onClick={onResetSuperAiCards}
+                >
+                  <Eraser className="size-3" /> Reset choices
+                </button>
+              )}
             </div>
           )}
           {scanCards !== undefined ? (
@@ -210,6 +223,8 @@ export function BoardCardTray({
                         card={card}
                         onWrongCard={onWrongSuperAiCard}
                         onNotCard={onNotSuperAiCard}
+                        onChooseCard={onWrongSuperAiCard}
+                        onPreview={onPreviewSuperAiCard}
                       >
                         <button
                           type="button"

@@ -86,7 +86,7 @@ export function applySuperAiCorrections(
     unused.delete(match[0])
     nextCorrections[match[0]] = { ...correction, quad: card.quad }
     if (correction.hidden) return []
-    return [{ ...card, id: correction.replacementId ?? card.id }]
+    return [{ ...card, id: correction.replacementId ?? card.id, ambiguous: false }]
   })
   return { cards: corrected, corrections: nextCorrections }
 }
@@ -135,6 +135,7 @@ export function useSuperAiCorrections(roomId: string, viewerPeerId: string, boar
       apply,
       hide: (card: SuperAiOverlayCard) => add(card, { hidden: true }),
       replace: (card: SuperAiOverlayCard, art: GalleryArt) => add(card, { replacementId: art.id }),
+      reset: () => save([]),
     }
   }, [apply, corrections, save])
 }

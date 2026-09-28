@@ -92,16 +92,18 @@ it("keeps each scanned card's best match and drops cards with no candidates", ()
     detections: [],
     totalMs: 10,
   }
-  expect(overlayCardsFromScan(scan)).toEqual([{ id: "forest", quad }])
+  expect(overlayCardsFromScan(scan)).toEqual([
+    { id: "forest", quad, candidates: scan.cards[0]!.candidates, ambiguous: false },
+  ])
 })
 
-it("does not replace a card with only one candidate", () => {
+it("shows a one-candidate card as ambiguous so the viewer can choose it", () => {
   const scan: FullFrameIdentification = {
     cards: [scannedCard([candidate("forest")])],
     detections: [],
     totalMs: 10,
   }
-  expect(overlayCardsFromScan(scan)).toEqual([])
+  expect(overlayCardsFromScan(scan)[0]).toMatchObject({ id: "forest", ambiguous: true })
 })
 
 it("requires the top candidate to clearly lead and accepts a caller-supplied lead", () => {
@@ -110,9 +112,9 @@ it("requires the top candidate to clearly lead and accepts a caller-supplied lea
     detections: [],
     totalMs: 10,
   }
-  expect(overlayCardsFromScan(scan)).toEqual([])
-  expect(overlayCardsFromScan(scan, 0.05)).toEqual([{ id: "forest", quad }])
-  expect(overlayCardsFromScan(scan, 0)).toEqual([{ id: "forest", quad }])
+  expect(overlayCardsFromScan(scan)[0]).toMatchObject({ id: "forest", ambiguous: true })
+  expect(overlayCardsFromScan(scan, 0.05)[0]).toMatchObject({ id: "forest", ambiguous: false })
+  expect(overlayCardsFromScan(scan, 0)[0]).toMatchObject({ id: "forest", ambiguous: false })
 })
 
 it("keeps a matching card in its prior enlarged box and updates a real move", () => {
@@ -138,6 +140,16 @@ it("keeps a matching card in its prior enlarged box and updates a real move", ()
   ])
 })
 
+it("retains a spatial slot when a new winner is within the click ambiguity margin", () => {
+  const previous = [{ id: "forest", quad: quad as unknown as Quad }]
+  const candidates = [candidate("island"), { ...candidate("forest"), score: 0.84 }]
+  expect(
+    stabilizeSuperAiCards(previous, [
+      { id: "island", quad: quad as unknown as Quad, candidates, ambiguous: true },
+    ])[0],
+  ).toMatchObject({ id: "forest", quad })
+})
+
 it("spatially carries hide and replacement corrections across scan jitter and changed answers", () => {
   const moved = quad.map(([x, y]) => [x + 12, y - 8]) as Quad
   expect(quadOverlap(quad as unknown as Quad, moved)).toBeGreaterThan(0.7)
@@ -146,7 +158,7 @@ it("spatially carries hide and replacement corrections across scan jitter and ch
       [{ id: "wrong-again", quad: moved }],
       [{ quad: quad as unknown as Quad, replacementId: "correct" }],
     ).cards,
-  ).toEqual([{ id: "correct", quad: moved }])
+  ).toEqual([{ id: "correct", quad: moved, ambiguous: false }])
   expect(
     applySuperAiCorrections(
       [{ id: "false-positive", quad: moved }],
@@ -162,6 +174,32 @@ it("renders art as a non-interactive projectively transformed image", () => {
   expect(art.getAttribute("src")).toBe("https://cards.example/art.jpg")
   expect(art.style.transform).toBe(transform)
   expect(art.className).toContain("origin-top-left")
+})
+
+it("passes the eye control's visibility update through to overlay art", () => {
+  const card = { id: "forest", quad: quad as unknown as Quad }
+  render(
+    <SuperAiActions card={card} onWrongCard={vi.fn()} onNotCard={vi.fn()}>
+      <SuperAiArt src="https://cards.example/art.jpg" transform="matrix3d(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1)" />
+    </SuperAiActions>,
+  )
+  const art = screen.getByRole("presentation")
+  fireEvent.click(screen.getByRole("button", { name: "Hide card art" }))
+  expect(art.style.visibility).toBe("hidden")
+  fireEvent.click(screen.getByRole("button", { name: "Restore card art" }))
+  expect(art.style.visibility).toBe("")
+})
+
+it("opens a preview when overlay art is clicked", () => {
+  const card = { id: "forest", quad: quad as unknown as Quad }
+  const onPreview = vi.fn()
+  render(
+    <SuperAiActions card={card} onWrongCard={vi.fn()} onNotCard={vi.fn()} onPreview={onPreview}>
+      <SuperAiArt src="https://cards.example/art.jpg" transform="matrix3d(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1)" />
+    </SuperAiActions>,
+  )
+  fireEvent.click(screen.getByRole("presentation"))
+  expect(onPreview).toHaveBeenCalledWith(card)
 })
 
 it("wires both overlay context actions to its detected region", async () => {

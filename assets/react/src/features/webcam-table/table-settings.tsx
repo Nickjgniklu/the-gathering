@@ -79,6 +79,7 @@ export function TableSettings({
   preferences,
   room,
   recognizer,
+  superAiDebug,
   corrections,
   onHelp,
 }: {
@@ -88,6 +89,7 @@ export function TableSettings({
     "cameraOff" | "toggleCamera" | "localStream" | "changeCamera" | "cameraChanging" | "cameraError"
   >
   recognizer: RecognizerState
+  superAiDebug: { transferMs: number; decodeMs: number; detectorMs: number; classifyMs: number; totalMs: number } | null
   corrections: ReturnType<typeof useCorrectionUpload>
   onHelp: () => void
 }) {
@@ -339,6 +341,15 @@ export function TableSettings({
           board with card art. Use this to tune a model or inspect uncertain matches.
         </p>
         <CorrectionPreference upload={corrections} />
+        {preferences.stats && superAiDebug && (
+          <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1 rounded-lg bg-black/20 p-2 text-[0.65rem] tabular-nums">
+            <dt>Frame transfer</dt><dd>{Math.round(superAiDebug.transferMs)} ms</dd>
+            <dt>JPEG decode</dt><dd>{Math.round(superAiDebug.decodeMs)} ms</dd>
+            <dt>Detect boxes</dt><dd>{Math.round(superAiDebug.detectorMs)} ms</dd>
+            <dt>Classify cards</dt><dd>{Math.round(superAiDebug.classifyMs)} ms</dd>
+            <dt>Recognizer total</dt><dd>{Math.round(superAiDebug.totalMs)} ms</dd>
+          </dl>
+        )}
         <p className="mt-3 break-words text-[0.65rem] text-base-content/60">
           {describeRecognizer(recognizer)}
         </p>

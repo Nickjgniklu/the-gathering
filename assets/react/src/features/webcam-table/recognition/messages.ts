@@ -86,6 +86,8 @@ export interface FullFrameIdentification {
   cards: Identification[]
   /** Table-detector regions, including ones that did not produce a confident card match. */
   detections: FrameDetection[]
+  /** Timings for the full-frame detector and per-card identity matching. */
+  timings: { detector: number; classify: number }
   /** Milliseconds spent scanning the complete frame. */
   totalMs: number
 }

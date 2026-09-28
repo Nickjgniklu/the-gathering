@@ -1,10 +1,12 @@
 import { CLEAR_MARGIN, isClear } from "./card-suggestions"
 import type { FrameDetection, FullFrameIdentification } from "./recognition/messages"
-import type { Quad } from "./recognition/pipeline"
+import type { Candidate, Quad } from "./recognition/pipeline"
 
 export interface SuperAiOverlayCard {
   id: string
   quad: Quad
+  candidates?: Candidate[]
+  ambiguous?: boolean
 }
 
 export type SuperAiDetection = FrameDetection
@@ -25,7 +27,16 @@ export function overlayCardsFromScan(
 ): SuperAiOverlayCard[] {
   return result.cards.flatMap((card) => {
     const top = card.candidates[0]
-    return top && isClear(card.candidates, minMargin) ? [{ id: top.id, quad: card.quad }] : []
+    return top
+      ? [
+          {
+            id: top.id,
+            quad: card.quad,
+            candidates: card.candidates,
+            ambiguous: !isClear(card.candidates, minMargin),
+          },
+        ]
+      : []
   })
 }
 
@@ -57,13 +68,10 @@ export function stabilizeSuperAiCards(
   next: SuperAiOverlayCard[],
 ): SuperAiOverlayCard[] {
   const available = new Set(previous.keys())
-  return next.map((card) => {
+  const matched = next.map((card) => {
     const cardCenter = center(card.quad)
     const matchingIndex = [...available]
-      .filter(
-        (index) =>
-          previous[index]?.id === card.id && containsWithMargin(previous[index].quad, cardCenter),
-      )
+      .filter((index) => containsWithMargin(previous[index]!.quad, cardCenter))
       .sort((left, right) => {
         const [leftX, leftY] = center(previous[left].quad)
         const [rightX, rightY] = center(previous[right].quad)
@@ -73,8 +81,28 @@ export function stabilizeSuperAiCards(
           ((rightX - cardCenter[0]) ** 2 + (rightY - cardCenter[1]) ** 2)
         )
       })[0]
-    if (matchingIndex === undefined) return card
+    if (matchingIndex === undefined) return { card, previousIndex: Number.MAX_SAFE_INTEGER }
     available.delete(matchingIndex)
-    return previous[matchingIndex]
+    const prior = previous[matchingIndex]!
+    const priorCandidate = card.candidates?.find((candidate) => candidate.id === prior.id)
+    const winner = card.candidates?.[0]
+    const retainPrior =
+      card.id === prior.id ||
+      (priorCandidate !== undefined &&
+        winner !== undefined &&
+        winner.score - priorCandidate.score < CLEAR_MARGIN)
+    return {
+      card: retainPrior ? { ...card, id: prior.id, quad: prior.quad } : card,
+      previousIndex: matchingIndex,
+    }
   })
+  return matched
+    .sort((left, right) => {
+      if (left.previousIndex !== right.previousIndex)
+        return left.previousIndex - right.previousIndex
+      const [leftX, leftY] = center(left.card.quad)
+      const [rightX, rightY] = center(right.card.quad)
+      return leftY - rightY || leftX - rightX || left.card.id.localeCompare(right.card.id)
+    })
+    .map(({ card }) => card)
 }

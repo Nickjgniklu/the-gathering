@@ -348,6 +348,7 @@ async function identifyFrame(
     settings.tableDetectorTileOverlap,
     settings.nmsIouThreshold,
   )
+  const detected = performance.now()
   assertNotCancelled(id)
   const detections = proposals
   const cards: Identification[] = []
@@ -376,6 +377,7 @@ async function identifyFrame(
   return {
     cards: deduplicated,
     detections: detections.map(({ quad, confidence }) => ({ quad, confidence })),
+    timings: { detector: detected - started, classify: performance.now() - detected },
     totalMs: performance.now() - started,
   }
 }

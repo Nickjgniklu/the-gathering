@@ -86,6 +86,9 @@ function LiveRoom({ roomId, playerId, playerName, decks }: LiveRoomProps) {
     detections: SuperAiDetection[]
     source: { width: number; height: number } | null
   }>({ cards: [], detections: [], source: null })
+  const [superAiDebug, setSuperAiDebug] = useState<{
+    transferMs: number; decodeMs: number; detectorMs: number; classifyMs: number; totalMs: number
+  } | null>(null)
   const room = useWebcamRoom(
     roomId,
     playerId,
@@ -136,6 +139,7 @@ function LiveRoom({ roomId, playerId, playerName, decks }: LiveRoomProps) {
   const [correctingSuperAiCard, setCorrectingSuperAiCard] = useState<SuperAiOverlayCard | null>(
     null,
   )
+  const [previewingSuperAiCard, setPreviewingSuperAiCard] = useState<SuperAiOverlayCard | null>(null)
   const correctedSuperAiCards = {
     ...superAiCards,
     cards: superAiCorrections.apply(superAiCards.cards),
@@ -145,7 +149,9 @@ function LiveRoom({ roomId, playerId, playerName, decks }: LiveRoomProps) {
       const controller = superAiAbortRef.current
       if (!controller || controller.signal.aborted || superAiTargetRef.current !== frame.peerId)
         return
+      const decodeStarted = performance.now()
       const image = await decodeJpeg(new Blob([frame.bytes.buffer], { type: "image/jpeg" }))
+      const decodeMs = performance.now() - decodeStarted
       const result = await flow.recognizer.identifyFrame(
         image,
         { minMatchConfidence: preferences.superAiMinMatchConfidence },
@@ -153,6 +159,7 @@ function LiveRoom({ roomId, playerId, playerName, decks }: LiveRoomProps) {
       )
       if (controller.signal.aborted || superAiTargetRef.current !== frame.peerId) return
       const scanned = overlayCardsFromScan(result, preferences.superAiMargin)
+      setSuperAiDebug({ transferMs: frame.transferMs, decodeMs, detectorMs: result.timings.detector, classifyMs: result.timings.classify, totalMs: result.totalMs })
       setSuperAiCards((previous) => ({
         cards:
           previous.source?.width === frame.width && previous.source.height === frame.height
@@ -266,12 +273,16 @@ function LiveRoom({ roomId, playerId, playerName, decks }: LiveRoomProps) {
         onToggleSuperAi={() => preferences.update({ superAi: !preferences.superAi })}
         onWrongSuperAiCard={setCorrectingSuperAiCard}
         onNotSuperAiCard={superAiCorrections.hide}
+        superAiPreview={previewingSuperAiCard}
+        onPreviewSuperAiCard={setPreviewingSuperAiCard}
+        onResetSuperAiCards={superAiCorrections.reset}
       />
 
       <SuperAiCardSearch
         open={correctingSuperAiCard !== null}
         onOpenChange={(open) => !open && setCorrectingSuperAiCard(null)}
         onSearch={flow.recognizer.search}
+        candidates={correctingSuperAiCard?.candidates ?? []}
         onChoose={(art) => {
           if (correctingSuperAiCard) superAiCorrections.replace(correctingSuperAiCard, art)
           setCorrectingSuperAiCard(null)
@@ -303,6 +314,7 @@ function LiveRoom({ roomId, playerId, playerName, decks }: LiveRoomProps) {
             room={{ ...room, toggleCamera }}
             corrections={corrections}
             recognizer={flow.recognizer.state}
+            superAiDebug={superAiDebug}
             onHelp={openHelp}
           />
         }

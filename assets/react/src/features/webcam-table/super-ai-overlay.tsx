@@ -1,5 +1,5 @@
 import { useQueries } from "@tanstack/react-query"
-import { useLayoutEffect, useRef, useState } from "react"
+import { useLayoutEffect, useRef, useState, type ComponentPropsWithoutRef } from "react"
 import { getPrintingDetails } from "./card-details"
 import type { Quad } from "./recognition/pipeline"
 import type { SuperAiDetection, SuperAiOverlayCard } from "./super-ai"
@@ -47,14 +47,21 @@ export function quadTransform(quad: Quad) {
   return `matrix3d(${[a, d, 0, g, b, e, 0, h, 0, 0, 1, 0, c, f, 0, 1].join(",")})`
 }
 
-export function SuperAiArt({ src, transform }: { src: string; transform: string }) {
+export function SuperAiArt({
+  src,
+  transform,
+  className,
+  style,
+  ...props
+}: { src: string; transform: string } & Omit<ComponentPropsWithoutRef<"img">, "src">) {
   return (
     <img
+      {...props}
       data-super-ai-art
       src={src}
       alt=""
-      className="pointer-events-auto absolute top-0 left-0 h-px w-px origin-top-left"
-      style={{ transform }}
+      className={`pointer-events-auto absolute top-0 left-0 h-px w-px origin-top-left ${className ?? ""}`}
+      style={{ ...style, transform }}
     />
   )
 }
@@ -171,6 +178,8 @@ export function SuperAiOverlay({
   flip,
   onWrongCard,
   onNotCard,
+  onChooseCard,
+  onPreviewCard,
 }: {
   cards: SuperAiOverlayCard[]
   detections: SuperAiDetection[]
@@ -178,6 +187,8 @@ export function SuperAiOverlay({
   flip: ViewerFlip
   onWrongCard: (card: SuperAiOverlayCard) => void
   onNotCard: (card: SuperAiOverlayCard) => void
+  onChooseCard: (card: SuperAiOverlayCard) => void
+  onPreviewCard: (card: SuperAiOverlayCard) => void
 }) {
   const root = useRef<HTMLDivElement>(null)
   const stage = useSize(root)
@@ -191,11 +202,7 @@ export function SuperAiOverlay({
   if (!source || !stage.width || !stage.height)
     return <div ref={root} className="pointer-events-none absolute inset-0" />
   return (
-    <div
-      ref={root}
-      className="pointer-events-none absolute inset-0 overflow-hidden"
-      aria-hidden="true"
-    >
+    <div ref={root} className="pointer-events-none absolute inset-0 overflow-hidden">
       {cards.map((card, index) => {
         const quad = mapSourceQuad(card.quad, source, stage, flip)
         const transform = quadTransform(quad)
@@ -203,7 +210,14 @@ export function SuperAiOverlay({
         if (!transform || !detail?.image_uris.normal) return null
         return (
           <div key={`${card.id}-${index}`}>
-            <SuperAiActions card={card} onWrongCard={onWrongCard} onNotCard={onNotCard}>
+            <SuperAiActions
+              card={card}
+              onWrongCard={onWrongCard}
+              onNotCard={onNotCard}
+              onChooseCard={onChooseCard}
+              onPreview={onPreviewCard}
+              controlsStyle={{ left: quad[0][0], top: quad[0][1] }}
+            >
               <SuperAiArt src={detail.image_uris.normal} transform={transform} />
             </SuperAiActions>
             <SuperAiOutline quad={quad} name={detail.name} />

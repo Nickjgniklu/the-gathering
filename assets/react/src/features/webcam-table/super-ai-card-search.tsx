@@ -14,11 +14,13 @@ export function SuperAiCardSearch({
   onOpenChange,
   onSearch,
   onChoose,
+  candidates = [],
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   onSearch: (query: string) => Promise<GalleryArt[]>
   onChoose: (art: GalleryArt) => void
+  candidates?: GalleryArt[]
 }) {
   const [query, setQuery] = useState("")
   const [results, setResults] = useState<GalleryArt[]>([])
@@ -41,6 +43,22 @@ export function SuperAiCardSearch({
           <DialogClose onClose={() => onOpenChange(false)} />
         </DialogHeader>
         <div className="grid gap-3 p-5">
+          {candidates.length > 0 && (
+            <ul className="max-h-48 overflow-y-auto" aria-label="Close matches">
+              {candidates.map((art) => (
+                <li key={art.id}>
+                  <button
+                    type="button"
+                    className="w-full rounded-field px-3 py-2 text-left hover:bg-base-200"
+                    onClick={() => onChoose(art)}
+                  >
+                    <span className="font-semibold">{art.name}</span>
+                    <span className="ml-2 text-sm opacity-60">{art.set.toUpperCase()}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
           <Input
             autoFocus
             aria-label="Search for the correct card"

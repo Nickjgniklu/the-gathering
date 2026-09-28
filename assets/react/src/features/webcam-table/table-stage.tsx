@@ -23,6 +23,7 @@ import {
   type TableView,
 } from "./table-view"
 import type { CardIdentificationFlow } from "./use-card-identification-flow"
+import type { IdentifiedCard } from "./use-webcam-room"
 import type { useVideoStats } from "./video-stats"
 
 function StageBoard({
@@ -35,6 +36,8 @@ function StageBoard({
   onToggleSuperAi,
   onWrongSuperAiCard,
   onNotSuperAiCard,
+  onPreviewSuperAiCard,
+  onResetSuperAiCards,
 }: {
   view: TableView
   participant: TableParticipant
@@ -49,6 +52,8 @@ function StageBoard({
   onToggleSuperAi: () => void
   onWrongSuperAiCard: (card: SuperAiOverlayCard) => void
   onNotSuperAiCard: (card: SuperAiOverlayCard) => void
+  onPreviewSuperAiCard: (card: SuperAiOverlayCard | null) => void
+  onResetSuperAiCards: () => void
 }) {
   const { room, preferences } = view
   return (
@@ -104,6 +109,8 @@ function StageBoard({
           flip={videoFlip(view, participant)}
           onWrongCard={onWrongSuperAiCard}
           onNotCard={onNotSuperAiCard}
+          onChooseCard={onWrongSuperAiCard}
+          onPreviewCard={onPreviewSuperAiCard}
         />
         {participant.peer_id === view.activeGroup[0]?.peer_id && (
           <Button
@@ -139,6 +146,8 @@ function StageBoard({
           onExpandedChange={(trayOpen) => preferences.update({ trayOpen })}
           onWrongSuperAiCard={onWrongSuperAiCard}
           onNotSuperAiCard={onNotSuperAiCard}
+          onPreviewSuperAiCard={onPreviewSuperAiCard}
+          onResetSuperAiCards={onResetSuperAiCards}
         />
       </div>
       <SeatActions view={view} participant={participant} size="board" />
@@ -252,6 +261,9 @@ export function TableStage({
   onToggleSuperAi,
   onWrongSuperAiCard,
   onNotSuperAiCard,
+  superAiPreview,
+  onPreviewSuperAiCard,
+  onResetSuperAiCards,
 }: {
   ref?: Ref<HTMLElement>
   view: TableView
@@ -267,6 +279,9 @@ export function TableStage({
   onToggleSuperAi: () => void
   onWrongSuperAiCard: (card: SuperAiOverlayCard) => void
   onNotSuperAiCard: (card: SuperAiOverlayCard) => void
+  superAiPreview: SuperAiOverlayCard | null
+  onPreviewSuperAiCard: (card: SuperAiOverlayCard | null) => void
+  onResetSuperAiCards: () => void
 }) {
   const { room } = view
   return (
@@ -313,11 +328,32 @@ export function TableStage({
               onToggleSuperAi={onToggleSuperAi}
               onWrongSuperAiCard={onWrongSuperAiCard}
               onNotSuperAiCard={onNotSuperAiCard}
+              onPreviewSuperAiCard={onPreviewSuperAiCard}
+              onResetSuperAiCards={onResetSuperAiCards}
             />
           ))
         )}
         <IdentificationOverlays view={view} flow={flow} />
+        {superAiPreview && (
+          <CardPreview
+            card={superAiPreviewCard(superAiPreview)}
+            onWrongCard={() => {
+              onWrongSuperAiCard(superAiPreview)
+              onPreviewSuperAiCard(null)
+            }}
+            onRemove={() => {
+              onNotSuperAiCard(superAiPreview)
+              onPreviewSuperAiCard(null)
+            }}
+            onClose={() => onPreviewSuperAiCard(null)}
+          />
+        )}
       </div>
     </section>
   )
+}
+
+function superAiPreviewCard(card: SuperAiOverlayCard): IdentifiedCard {
+  const candidate = card.candidates?.find((entry) => entry.id === card.id)
+  return { id: card.id, name: candidate?.name ?? "Recognized card", set: candidate?.set ?? "" }
 }

@@ -20,6 +20,7 @@ interface Incoming {
   chunks: Map<number, string>
   receivedBytes: number
   ended: boolean
+  requestedAt: number
   timeout: number
 }
 
@@ -49,6 +50,7 @@ export function useSuperAi(
     bytes: Uint8Array
     width: number
     height: number
+    transferMs: number
   }) => Promise<void>,
   scanIntervalMs = SUPER_AI_SCAN_INTERVAL_MS,
 ) {
@@ -156,6 +158,7 @@ export function useSuperAi(
           bytes: data,
           width: incoming.start.width,
           height: incoming.start.height,
+          transferMs: performance.now() - incoming.requestedAt,
         })
         setLastCompleted(Date.now())
         setStatus("idle")
@@ -192,6 +195,7 @@ export function useSuperAi(
           chunks: new Map(),
           receivedBytes: 0,
           ended: false,
+          requestedAt: pending.requestedAt,
           timeout: window.setTimeout(clearIncoming, SUPER_AI_TIMEOUT_MS),
         }
       } else if (message.type === "super_ai_frame_chunk") {
@@ -267,7 +271,7 @@ export function useSuperAi(
         setStatus("scanning")
         recognizingRef.current = true
         const data = bytes(captured.image.slice(captured.image.indexOf(",") + 1))
-        onFrame({ peerId: target, bytes: data, width: captured.width, height: captured.height })
+        onFrame({ peerId: target, bytes: data, width: captured.width, height: captured.height, transferMs: 0 })
           .then(() => {
             setLastCompleted(Date.now())
             setStatus("idle")
@@ -286,6 +290,7 @@ export function useSuperAi(
       pendingRef.current = {
         target,
         requestId,
+        requestedAt: performance.now(),
         timeout: window.setTimeout(() => {
           clearPending()
           setStatus("failed")
