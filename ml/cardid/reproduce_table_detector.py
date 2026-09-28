@@ -19,11 +19,24 @@ than one-off fixes bolted on mid-lineage:
     `distant_wide` has been a permanent member of `SPLIT_CAMERA_PROFILES["train"]` ever since, so
     a from-scratch run already sees it from epoch 1 of the very first phase. Skipped here.
 
-One consequence: `HARD_NEG_WEIGHT` (the loss's clutter/round-object upweighting) is now a
-permanent module constant rather than something introduced only starting at `table-a-hardneg-v4`,
-so phases 4-6 below train on literally identical data and loss code and mostly just spend the
-historical epoch budget re-confirming convergence. Kept anyway because the ask was to replicate
-the *steps*, and it costs nothing but GPU time to stay faithful to them.
+One consequence measured, not assumed: `HARD_NEG_WEIGHT` (the loss's clutter/round-object
+upweighting) is now a permanent module constant rather than something introduced only starting at
+`table-a-hardneg-v4`, so what were historically two distinct phases (`table-a-hardneg-v4` then
+`table-a-realclutter-v5`, introducing the hard-negative loss weight and the real-clutter data
+respectively, on *different* data each time) become, here, two runs of the literal same
+`train_table_detector.py` command against the literal same already-v5 data. The first run of this
+script kept both anyway (faithful-to-history) and it backfired: scoring every phase's checkpoint
+against the real-capture golden set directly (not the synthetic `val` split) showed the fourth
+phase (`table-a-hardneg-v4`-equivalent) landed at recall 87.0%/precision 84.7%/fp_on_negatives
+7.4% -- close to the shipped `table-a-realclutter-v5` baseline and *better* on false positives --
+while the fifth, fully-redundant phase drifted it to 84.3%/75.8%/18.5%, worse on every measure.
+Spending 20 more epochs re-training on data the model had already converged on didn't reinforce
+anything; it just moved the checkpoint to a different, not-better point in weight space, and the
+only evaluation that would show this (real_captures, n=108) is exactly the one synthetic `val`
+accuracy can't distinguish by. So there are 5 phases below, not 6: the redundant one is removed
+rather than kept for faithfulness once faithfulness had a measured cost. If you want to spend more
+epochs chasing the exact historical numbers, add them to the last phase or vary its `--seed`
+rather than bolting on another identical phase.
 
 Each phase warm-starts from the previous phase's `best.pt` (score-gated: `recall + precision`),
 matching how every historical `table-a-*` run resumed. Idempotent: re-running skips any phase
@@ -32,7 +45,7 @@ epochs as configured, so a killed/interrupted invocation can just be re-run.
 
     uv run python -m cardid.reproduce_table_detector run
     uv run python -m cardid.reproduce_table_detector run --from-phase repro-a-hardware-stress
-    uv run python -m cardid.reproduce_table_detector evaluate --run repro-a-realclutter-v5
+    uv run python -m cardid.reproduce_table_detector evaluate --run repro-a-hardneg-v4
 """
 
 from __future__ import annotations
@@ -67,13 +80,14 @@ class Phase:
 # flag: `train_table_detector.py` hardcodes an ImageNet-pretrained backbone unconditionally now
 # (an early from-scratch comparison lost decisively; see that module's own docstring), so the
 # first phase's `pretrained: True` in its historical run.json reflects that default, not a flag.
+# `table-a-realclutter-v5` is also skipped -- see module docstring: on this already-v5 dataset it
+# is a byte-identical rerun of the phase before it, and measured worse on the real-capture set.
 PHASES: list[Phase] = [
     Phase("repro-a-pretrained", epochs=120, batch=32, val_limit=150, workers=2),
     Phase("repro-a-nonstandard-finetune", epochs=50, batch=32, val_limit=150, workers=3),
     Phase("repro-a-hardware-stress", epochs=25, batch=8, val_limit=100, workers=1, hardware_stress_rate=0.25),
     Phase("repro-a-realcapture-hardening", epochs=20, batch=16, val_limit=150, workers=1, hardware_stress_rate=0.15),
     Phase("repro-a-hardneg-v4", epochs=20, batch=16, val_limit=150, workers=2, hardware_stress_rate=0.15),
-    Phase("repro-a-realclutter-v5", epochs=20, batch=16, val_limit=150, workers=2, hardware_stress_rate=0.15),
 ]
 
 RUNS_DIR = DATA_DIR / "runs"
