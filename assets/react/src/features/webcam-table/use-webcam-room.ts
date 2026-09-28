@@ -37,6 +37,7 @@ export function useWebcamRoom(
     width: number
     height: number
   }) => Promise<void>,
+  superAiScanIntervalMs?: number,
 ) {
   const link = useRoomLink()
   const [status, setStatus] = useState("Opening 1080p camera…")
@@ -48,7 +49,13 @@ export function useWebcamRoom(
   useEffect(() => {
     superAiFrameRef.current = onSuperAiFrame
   }, [onSuperAiFrame])
-  const superAi = useSuperAi(link, camera, peers, async (frame) => superAiFrameRef.current?.(frame))
+  const superAi = useSuperAi(
+    link,
+    camera,
+    peers,
+    async (frame) => superAiFrameRef.current?.(frame),
+    superAiScanIntervalMs,
+  )
   const cards = useBoardCards(link)
   const game = useTableGameState(link, playerId, setError)
   // Set while this seat ends the table, so its own `table_closed` is not reported back to it.

@@ -1,7 +1,14 @@
 import { useLayoutEffect, useRef, useState } from "react"
 import type { FlipAxis } from "./board"
 import { isPublisherQuality, type PublisherQuality } from "./media-policy"
-import { SUPER_AI_MARGIN_DEFAULT, SUPER_AI_MARGIN_MAX, SUPER_AI_MARGIN_MIN } from "./super-ai"
+import {
+  SUPER_AI_MARGIN_DEFAULT,
+  SUPER_AI_MARGIN_MAX,
+  SUPER_AI_MARGIN_MIN,
+  SUPER_AI_SCAN_INTERVAL_DEFAULT_SECONDS,
+  SUPER_AI_SCAN_INTERVAL_MAX_SECONDS,
+  SUPER_AI_SCAN_INTERVAL_MIN_SECONDS,
+} from "./super-ai"
 
 /** The camera rail's real limit is dynamic (see `useCameraRailWidth`); its `max` only bounds saved values. */
 export const RAIL_WIDTHS = {
@@ -26,6 +33,10 @@ interface Preferences {
   superAi: boolean
   /** Minimum lead over runner-up before a scanned card gets gallery art overlaid on it. */
   superAiMargin: number
+  /** How often this viewer requests a fresh Super AI board scan. */
+  superAiScanIntervalSeconds: number
+  /** Draw raw table-detector proposals, including those without a confident identity match. */
+  superAiShowDetections: boolean
   /** Reopen the card tray the way it was left when the stage switches to another board. */
   keepTrayOpen: boolean
   /** The tray's last open state; only read while keepTrayOpen is on. */
@@ -68,6 +79,8 @@ export function useTablePreferences(playerId: number) {
       turnSound: true,
       superAi: false,
       superAiMargin: SUPER_AI_MARGIN_DEFAULT,
+      superAiScanIntervalSeconds: SUPER_AI_SCAN_INTERVAL_DEFAULT_SECONDS,
+      superAiShowDetections: false,
       keepTrayOpen: false,
       trayOpen: false,
       flippedPlayerIds: [],
@@ -90,6 +103,16 @@ export function useTablePreferences(playerId: number) {
           "superAiMargin" in saved && typeof saved.superAiMargin === "number"
             ? Math.max(SUPER_AI_MARGIN_MIN, Math.min(SUPER_AI_MARGIN_MAX, saved.superAiMargin))
             : defaults.superAiMargin,
+        superAiScanIntervalSeconds:
+          "superAiScanIntervalSeconds" in saved &&
+          typeof saved.superAiScanIntervalSeconds === "number"
+            ? Math.max(
+                SUPER_AI_SCAN_INTERVAL_MIN_SECONDS,
+                Math.min(SUPER_AI_SCAN_INTERVAL_MAX_SECONDS, saved.superAiScanIntervalSeconds),
+              )
+            : defaults.superAiScanIntervalSeconds,
+        superAiShowDetections:
+          "superAiShowDetections" in saved && saved.superAiShowDetections === true,
         keepTrayOpen: "keepTrayOpen" in saved && saved.keepTrayOpen === true,
         trayOpen: "trayOpen" in saved && saved.trayOpen === true,
         flippedPlayerIds: savedPlayerIds(saved, FLIP_KEYS.vertical),

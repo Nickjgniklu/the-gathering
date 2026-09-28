@@ -85,6 +85,7 @@ it("keeps each scanned card's best match and drops cards with no candidates", ()
       scannedCard([candidate("forest"), { ...candidate("island"), score: 0.8 }]),
       scannedCard([]),
     ],
+    detections: [],
     totalMs: 10,
   }
   expect(overlayCardsFromScan(scan)).toEqual([{ id: "forest", quad }])
@@ -93,6 +94,7 @@ it("keeps each scanned card's best match and drops cards with no candidates", ()
 it("does not replace a card with only one candidate", () => {
   const scan: FullFrameIdentification = {
     cards: [scannedCard([candidate("forest")])],
+    detections: [],
     totalMs: 10,
   }
   expect(overlayCardsFromScan(scan)).toEqual([])
@@ -101,10 +103,12 @@ it("does not replace a card with only one candidate", () => {
 it("requires the top candidate to clearly lead and accepts a caller-supplied lead", () => {
   const scan: FullFrameIdentification = {
     cards: [scannedCard([candidate("forest"), { ...candidate("island"), score: 0.84 }])],
+    detections: [],
     totalMs: 10,
   }
   expect(overlayCardsFromScan(scan)).toEqual([])
   expect(overlayCardsFromScan(scan, 0.05)).toEqual([{ id: "forest", quad }])
+  expect(overlayCardsFromScan(scan, 0)).toEqual([{ id: "forest", quad }])
 })
 
 it("keeps a matching card in its prior enlarged box and updates a real move", () => {

@@ -37,6 +37,15 @@ import {
   type Quad,
   type RgbaImage,
 } from "./pipeline"
+import {
+  cropImage,
+  dedupeTableDetections,
+  quadIou,
+  tileBoxes,
+  type TableDetection,
+} from "./table-detection"
+
+export { quadIou } from "./table-detection"
 
 // Same-origin copies of the runtime (Vite emits them as assets); the page is not
 // cross-origin isolated, so a single wasm thread.
@@ -218,7 +227,18 @@ interface ScanProposal {
   confidence: number
 }
 
-async function detectTable(image: RgbaImage): Promise<ScanProposal[]> {
+function proposal(quad: Quad, confidence: number): ScanProposal {
+  const [x, y] = quad.reduce<[number, number]>(
+    ([totalX, totalY], [pointX, pointY]) => [totalX + pointX / 4, totalY + pointY / 4],
+    [0, 0],
+  )
+  return { x, y, quad, confidence }
+}
+
+async function detectTablePass(
+  image: RgbaImage,
+  mapQuad: (quad: Quad) => Quad,
+): Promise<ScanProposal[]> {
   if (!loaded) throw new Error("bundle not loaded")
   const tableDetector = requireTableDetector(loaded)
   const { input, transform } = letterboxToSquare(image, TABLE_DETECTOR_INPUT)
@@ -235,42 +255,50 @@ async function detectTable(image: RgbaImage): Promise<ScanProposal[]> {
   for (let i = 0; i < TABLE_DETECTOR_MAX_DETECTIONS; i += 1) {
     const confidence = scores[i] ?? 0
     if (confidence < TABLE_DETECTOR_MIN_SCORE) break
-    const quad = unletterboxQuad(
-      [0, 1, 2, 3].map((corner) => [
-        quads[(i * 4 + corner) * 2] ?? 0,
-        quads[(i * 4 + corner) * 2 + 1] ?? 0,
-      ]) as Quad,
-      transform,
+    const quad = mapQuad(
+      unletterboxQuad(
+        [0, 1, 2, 3].map((corner) => [
+          quads[(i * 4 + corner) * 2] ?? 0,
+          quads[(i * 4 + corner) * 2 + 1] ?? 0,
+        ]) as Quad,
+        transform,
+      ),
     )
-    const [x, y] = quad.reduce<[number, number]>(
-      ([totalX, totalY], [pointX, pointY]) => [totalX + pointX / 4, totalY + pointY / 4],
-      [0, 0],
-    )
-    proposals.push({ x, y, quad, confidence })
+    proposals.push(proposal(quad, confidence))
   }
   return proposals
 }
 
-function quadBounds(quad: Quad) {
-  const xs = quad.map(([x]) => x)
-  const ys = quad.map(([, y]) => y)
-  return {
-    left: Math.min(...xs),
-    top: Math.min(...ys),
-    right: Math.max(...xs),
-    bottom: Math.max(...ys),
-  }
-}
+async function detectTable(
+  image: RgbaImage,
+  grid: number,
+  overlap: number,
+  iouThreshold: number,
+): Promise<ScanProposal[]> {
+  const whole = await detectTablePass(image, (quad) => quad)
+  if (grid < 2) return whole
 
-export function quadIou(left: Quad, right: Quad): number {
-  const a = quadBounds(left)
-  const b = quadBounds(right)
-  const width = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left))
-  const height = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top))
-  const intersection = width * height
-  const union =
-    (a.right - a.left) * (a.bottom - a.top) + (b.right - b.left) * (b.bottom - b.top) - intersection
-  return union > 0 ? intersection / union : 0
+  // Keep the padded, native-resolution square until after each tile has been cropped. Tiling the
+  // already 384px whole-frame input would retain the exact downsampling that loses small cards.
+  const { input: square, transform: fullTransform } = letterboxToSquare(
+    image,
+    Math.max(image.width, image.height),
+  )
+  const tiled = await Promise.all(
+    tileBoxes(square.width, square.height, grid, overlap).map(async (box) => {
+      const tile = cropImage(square, box)
+      return detectTablePass(tile, (quad) =>
+        unletterboxQuad(quad.map(([x, y]) => [x + box.left, y + box.top]) as Quad, fullTransform),
+      )
+    }),
+  )
+  const merged: TableDetection[] = [...whole, ...tiled.flat()].map(({ quad, confidence }) => ({
+    quad,
+    confidence,
+  }))
+  return dedupeTableDetections(merged, iouThreshold).map(({ quad, confidence }) =>
+    proposal(quad, confidence),
+  )
 }
 
 export function nonMaximumSuppression<T extends { quad: Quad; confidence: number }>(
@@ -293,6 +321,11 @@ function scanOptions(options: FullFrameOptions | undefined) {
     minDetectorConfidence: confidence(options?.minDetectorConfidence, 0.45),
     minMatchConfidence: confidence(options?.minMatchConfidence, 0.55),
     nmsIouThreshold: confidence(options?.nmsIouThreshold, 0.45),
+    tableDetectorTileGrid: Math.max(
+      1,
+      Math.min(4, Math.round(options?.tableDetectorTileGrid ?? 2)),
+    ),
+    tableDetectorTileOverlap: Math.max(0, Math.min(0.5, options?.tableDetectorTileOverlap ?? 0.2)),
   }
 }
 
@@ -309,10 +342,16 @@ async function identifyFrame(
   requireIdentification(loaded)
   const started = performance.now()
   const settings = scanOptions(options)
-  const proposals = await detectTable(image)
+  const proposals = await detectTable(
+    image,
+    settings.tableDetectorTileGrid,
+    settings.tableDetectorTileOverlap,
+    settings.nmsIouThreshold,
+  )
   assertNotCancelled(id)
+  const detections = proposals
   const cards: Identification[] = []
-  for (const proposal of nonMaximumSuppression(proposals, settings.nmsIouThreshold)) {
+  for (const proposal of detections) {
     assertNotCancelled(id)
     const point =
       settings.strategy === "hybrid"
@@ -334,7 +373,11 @@ async function identifyFrame(
     cards.map((card) => ({ ...card, confidence: card.candidates[0]?.score ?? 0 })),
     settings.nmsIouThreshold,
   )
-  return { cards: deduplicated, totalMs: performance.now() - started }
+  return {
+    cards: deduplicated,
+    detections: detections.map(({ quad, confidence }) => ({ quad, confidence })),
+    totalMs: performance.now() - started,
+  }
 }
 
 self.onmessage = async (event: MessageEvent<WorkerRequest>) => {

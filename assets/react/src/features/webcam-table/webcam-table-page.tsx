@@ -24,8 +24,12 @@ import { useSeatDecklists } from "./seat-decklists"
 import { useTurnSound } from "./use-turn-sound"
 import { useVideoStats } from "./video-stats"
 import { useWebcamRoom } from "./use-webcam-room"
-import { SUPER_AI_SCAN_INTERVAL_MS } from "./use-super-ai"
-import { overlayCardsFromScan, stabilizeSuperAiCards, type SuperAiOverlayCard } from "./super-ai"
+import {
+  overlayCardsFromScan,
+  stabilizeSuperAiCards,
+  type SuperAiDetection,
+  type SuperAiOverlayCard,
+} from "./super-ai"
 
 interface Props {
   roomId: string
@@ -77,8 +81,9 @@ function LiveRoom({ roomId, playerId, playerName, decks }: LiveRoomProps) {
   const superAiTargetRef = useRef<string | null>(null)
   const [superAiCards, setSuperAiCards] = useState<{
     cards: SuperAiOverlayCard[]
+    detections: SuperAiDetection[]
     source: { width: number; height: number } | null
-  }>({ cards: [], source: null })
+  }>({ cards: [], detections: [], source: null })
   const room = useWebcamRoom(
     roomId,
     playerId,
@@ -87,6 +92,7 @@ function LiveRoom({ roomId, playerId, playerName, decks }: LiveRoomProps) {
     preferences.quality,
     preferences.cameraEnabled,
     useCallback((frame) => superAiFrameHandler.current(frame), []),
+    preferences.superAiScanIntervalSeconds * 1_000,
   )
   const [dialog, setDialog] = useState<TableDialog>(null)
   const [panelOpen, setPanelOpen] = useState(true)
@@ -133,7 +139,7 @@ function LiveRoom({ roomId, playerId, playerName, decks }: LiveRoomProps) {
       const result = await flow.recognizer.identifyFrame(
         image,
         { minMatchConfidence: 0 },
-        AbortSignal.any([controller.signal, AbortSignal.timeout(SUPER_AI_SCAN_INTERVAL_MS)]),
+        AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)]),
       )
       if (controller.signal.aborted || superAiTargetRef.current !== frame.peerId) return
       const scanned = overlayCardsFromScan(result, preferences.superAiMargin)
@@ -142,6 +148,7 @@ function LiveRoom({ roomId, playerId, playerName, decks }: LiveRoomProps) {
           previous.source?.width === frame.width && previous.source.height === frame.height
             ? stabilizeSuperAiCards(previous.cards, scanned)
             : scanned,
+        detections: result.detections,
         source: { width: frame.width, height: frame.height },
       }))
     }
@@ -156,7 +163,7 @@ function LiveRoom({ roomId, playerId, playerName, decks }: LiveRoomProps) {
   cancelSuperAiRef.current = cancelSuperAi
   useEffect(() => {
     superAiAbortRef.current?.abort()
-    setSuperAiCards({ cards: [], source: null })
+    setSuperAiCards({ cards: [], detections: [], source: null })
     if (!preferences.superAi || !superAiTarget) {
       superAiAbortRef.current = null
       superAiTargetRef.current = null
@@ -171,7 +178,7 @@ function LiveRoom({ roomId, playerId, playerName, decks }: LiveRoomProps) {
     const scan = () => {
       if (cancelled) return
       requestSuperAiRef.current(superAiTarget)
-      timer = window.setTimeout(scan, SUPER_AI_SCAN_INTERVAL_MS)
+      timer = window.setTimeout(scan, preferences.superAiScanIntervalSeconds * 1_000)
     }
     scan()
     return () => {
@@ -182,7 +189,7 @@ function LiveRoom({ roomId, playerId, playerName, decks }: LiveRoomProps) {
       if (timer) window.clearTimeout(timer)
       cancelSuperAiRef.current()
     }
-  }, [preferences.superAi, superAiTarget])
+  }, [preferences.superAi, preferences.superAiScanIntervalSeconds, superAiTarget])
   useRoomHotkeys(view, flow, {
     togglePanel: () => setPanelOpen((open) => !open),
     showTab: (tab) => {
@@ -241,6 +248,7 @@ function LiveRoom({ roomId, playerId, playerName, decks }: LiveRoomProps) {
         videoStats={videoStats}
         superAiCards={superAiCards}
         superAiEnabled={preferences.superAi}
+        showSuperAiDetections={preferences.superAiShowDetections}
         onToggleSuperAi={() => preferences.update({ superAi: !preferences.superAi })}
       />
 

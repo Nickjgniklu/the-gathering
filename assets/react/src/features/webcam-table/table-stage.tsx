@@ -9,7 +9,7 @@ import { cameraGridLayout } from "./camera-grid"
 import { CardPreview } from "./card-preview"
 import { CardSuggestions } from "./card-suggestions"
 import { SuperAiOverlay } from "./super-ai-overlay"
-import type { SuperAiOverlayCard } from "./super-ai"
+import type { SuperAiDetection, SuperAiOverlayCard } from "./super-ai"
 import type { TableParticipant } from "./room-types"
 import { describeRoll } from "./table-rolls"
 import { SeatActions, SeatLife, SeatTile, TeamHeader } from "./table-seat"
@@ -31,13 +31,19 @@ function StageBoard({
   flow,
   superAiCards,
   superAiEnabled,
+  showSuperAiDetections,
   onToggleSuperAi,
 }: {
   view: TableView
   participant: TableParticipant
   flow: CardIdentificationFlow
-  superAiCards: { cards: SuperAiOverlayCard[]; source: { width: number; height: number } | null }
+  superAiCards: {
+    cards: SuperAiOverlayCard[]
+    detections: SuperAiDetection[]
+    source: { width: number; height: number } | null
+  }
   superAiEnabled: boolean
+  showSuperAiDetections: boolean
   onToggleSuperAi: () => void
 }) {
   const { room, preferences } = view
@@ -80,7 +86,16 @@ function StageBoard({
           }}
         />
         <SuperAiOverlay
-          cards={participant.peer_id === view.activeGroup[0]?.peer_id ? superAiCards.cards : []}
+          cards={
+            !showSuperAiDetections && participant.peer_id === view.activeGroup[0]?.peer_id
+              ? superAiCards.cards
+              : []
+          }
+          detections={
+            showSuperAiDetections && participant.peer_id === view.activeGroup[0]?.peer_id
+              ? superAiCards.detections
+              : []
+          }
           source={superAiCards.source}
           flip={videoFlip(view, participant)}
         />
@@ -225,14 +240,20 @@ export function TableStage({
   videoStats,
   superAiCards,
   superAiEnabled,
+  showSuperAiDetections,
   onToggleSuperAi,
 }: {
   ref?: Ref<HTMLElement>
   view: TableView
   flow: CardIdentificationFlow
   videoStats: ReturnType<typeof useVideoStats>
-  superAiCards: { cards: SuperAiOverlayCard[]; source: { width: number; height: number } | null }
+  superAiCards: {
+    cards: SuperAiOverlayCard[]
+    detections: SuperAiDetection[]
+    source: { width: number; height: number } | null
+  }
   superAiEnabled: boolean
+  showSuperAiDetections: boolean
   onToggleSuperAi: () => void
 }) {
   const { room } = view
@@ -276,6 +297,7 @@ export function TableStage({
               flow={flow}
               superAiCards={superAiCards}
               superAiEnabled={superAiEnabled}
+              showSuperAiDetections={showSuperAiDetections}
               onToggleSuperAi={onToggleSuperAi}
             />
           ))

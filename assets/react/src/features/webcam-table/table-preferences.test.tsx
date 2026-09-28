@@ -142,10 +142,22 @@ it("persists view, camera, stats and sound choices without accepting malformed v
 it("defaults and persists the Super AI required lead", () => {
   const first = renderHook(() => useTablePreferences(5))
   expect(first.result.current.superAiMargin).toBe(0.08)
-  act(() => first.result.current.update({ superAiMargin: 0.12 }))
+  expect(first.result.current.superAiShowDetections).toBe(false)
+  expect(first.result.current.superAiScanIntervalSeconds).toBe(5)
+  act(() =>
+    first.result.current.update({
+      superAiMargin: 0,
+      superAiShowDetections: true,
+      superAiScanIntervalSeconds: 1,
+    }),
+  )
   first.unmount()
   const next = renderHook(() => useTablePreferences(5))
-  expect(next.result.current.superAiMargin).toBe(0.12)
+  expect(next.result.current).toMatchObject({
+    superAiMargin: 0,
+    superAiShowDetections: true,
+    superAiScanIntervalSeconds: 1,
+  })
 })
 
 it("clamps an out-of-range saved Super AI lead", () => {

@@ -60,6 +60,12 @@ export interface Identification {
   timings: { detector: number; embed: number; search: number; total: number }
 }
 
+/** A card-shaped region proposed by the table detector before identity matching. */
+export interface FrameDetection {
+  quad: Quad
+  confidence: number
+}
+
 /** Controls the expensive board scan without exposing detector implementation details. */
 export interface FullFrameOptions {
   /** `hybrid` adds detected centres back into the proposal set before recognition. */
@@ -70,10 +76,16 @@ export interface FullFrameOptions {
   minMatchConfidence?: number
   /** Overlap at which two proposed cards are considered one card. Default: 0.45. */
   nmsIouThreshold?: number
+  /** Square grid dimension for the table detector's additional overlapping passes. Default: 2. */
+  tableDetectorTileGrid?: number
+  /** Fraction of each neighboring detector tile that overlaps. Default: 0.2. */
+  tableDetectorTileOverlap?: number
 }
 
 export interface FullFrameIdentification {
   cards: Identification[]
+  /** Table-detector regions, including ones that did not produce a confident card match. */
+  detections: FrameDetection[]
   /** Milliseconds spent scanning the complete frame. */
   totalMs: number
 }

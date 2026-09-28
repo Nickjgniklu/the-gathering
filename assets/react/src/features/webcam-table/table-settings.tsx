@@ -7,7 +7,12 @@ import { isPublisherQuality } from "./media-policy"
 import { PanelSection } from "./panel-section"
 import type { RecognizerState } from "./recognition/use-recognizer"
 import { describeRecognizer } from "./side-panel-labels"
-import { SUPER_AI_MARGIN_MAX, SUPER_AI_MARGIN_MIN } from "./super-ai"
+import {
+  SUPER_AI_MARGIN_MAX,
+  SUPER_AI_MARGIN_MIN,
+  SUPER_AI_SCAN_INTERVAL_MAX_SECONDS,
+  SUPER_AI_SCAN_INTERVAL_MIN_SECONDS,
+} from "./super-ai"
 import type { useTablePreferences } from "./table-preferences"
 import { CorrectionPreference, type useCorrectionUpload } from "./use-correction-upload"
 import type { useWebcamRoom } from "./use-webcam-room"
@@ -254,8 +259,29 @@ export function TableSettings({
           Super AI board scan
         </Toggle>
         <p className="mt-2 text-[0.65rem] text-base-content/60">
-          Requests a full camera frame from the visible board every 10 seconds. Frames and card
-          matches stay in the two browsers and are never sent to the server.
+          Requests a full camera frame from the visible board. Frames and card matches stay in the
+          two browsers and are never sent to the server.
+        </p>
+        <label className="mt-3 block">
+          <span className="flex items-center justify-between text-[0.65rem] text-base-content/60">
+            Board scan frequency
+            <span className="tabular-nums">{preferences.superAiScanIntervalSeconds}s</span>
+          </span>
+          <input
+            type="range"
+            className="range range-primary range-xs mt-1.5"
+            min={SUPER_AI_SCAN_INTERVAL_MIN_SECONDS}
+            max={SUPER_AI_SCAN_INTERVAL_MAX_SECONDS}
+            step={1}
+            onChange={(event) =>
+              preferences.update({ superAiScanIntervalSeconds: Number(event.target.value) })
+            }
+            value={preferences.superAiScanIntervalSeconds}
+            aria-label="Super AI board scan frequency"
+          />
+        </label>
+        <p className="mt-1.5 text-[0.65rem] text-base-content/60">
+          Choose 1–15 seconds. Faster scans use more CPU and WebRTC bandwidth.
         </p>
         <label className="mt-3 block">
           <span className="flex items-center justify-between text-[0.65rem] text-base-content/60">
@@ -274,8 +300,18 @@ export function TableSettings({
           />
         </label>
         <p className="mt-1.5 text-[0.65rem] text-base-content/60">
-          Art appears only when its best card option beats the next option by this much, just like
-          click-to-identify. Raise it if the wrong art ever appears.
+          Set this to 0% to overlay the best match even when it ties the runner-up. Raise it if the
+          wrong art ever appears.
+        </p>
+        <Toggle
+          checked={preferences.superAiShowDetections}
+          onChange={(superAiShowDetections) => preferences.update({ superAiShowDetections })}
+        >
+          Show detector boxes instead of art
+        </Toggle>
+        <p className="text-[0.65rem] text-base-content/60">
+          Green outlines and direction markers show every card-shaped region without covering the
+          board with card art. Use this to tune a model or inspect uncertain matches.
         </p>
         <CorrectionPreference upload={corrections} />
         <p className="mt-3 break-words text-[0.65rem] text-base-content/60">

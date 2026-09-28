@@ -11,6 +11,7 @@ import type { LocalCamera } from "./use-local-camera"
 import type { PeerConnections } from "./use-peer-connections"
 
 export const SUPER_AI_SCAN_INTERVAL_MS = 30_000
+const SUPER_AI_MIN_ANSWER_INTERVAL_MS = 1_000
 export const SUPER_AI_TIMEOUT_MS = 32_000
 
 interface Incoming {
@@ -49,6 +50,7 @@ export function useSuperAi(
     width: number
     height: number
   }) => Promise<void>,
+  scanIntervalMs = SUPER_AI_SCAN_INTERVAL_MS,
 ) {
   const incomingRef = useRef<Incoming | null>(null)
   const pendingRef = useRef<{ target: string; requestId: string; timeout: number } | null>(null)
@@ -72,11 +74,9 @@ export function useSuperAi(
     async (peerId: string, requestId: string) => {
       if (!videoEnabled() || !canViewBoard(link.peerId, peerId, revealTarget())) return
       const now = Date.now()
-      // A little under the viewer's own polling interval: jitter in data-channel delivery
-      // between consecutive requests should never make an on-time request look "too soon".
       if (
         now - (lastAnsweredRef.current.get(peerId) ?? -Infinity) <
-        SUPER_AI_SCAN_INTERVAL_MS - 2_000
+        SUPER_AI_MIN_ANSWER_INTERVAL_MS
       )
         return
       lastAnsweredRef.current.set(peerId, now)
@@ -251,8 +251,7 @@ export function useSuperAi(
   const request = useCallback(
     (target: string) => {
       const now = Date.now()
-      if (now - (lastRequestRef.current.get(target) ?? -Infinity) < SUPER_AI_SCAN_INTERVAL_MS)
-        return false
+      if (now - (lastRequestRef.current.get(target) ?? -Infinity) < scanIntervalMs) return false
       // Your own board never leaves your browser at all: skip the peer transport (chunking,
       // digest, the round trip) and recognize the frame you already have locally.
       if (target === link.peerId) {
@@ -291,7 +290,7 @@ export function useSuperAi(
       setStatus("requesting")
       return true
     },
-    [clearPending, frame, link, onFrame, send, videoEnabled],
+    [clearPending, frame, link, onFrame, scanIntervalMs, send, videoEnabled],
   )
 
   const cancel = useCallback(() => {

@@ -1,5 +1,5 @@
 import { CLEAR_MARGIN, isClear } from "./card-suggestions"
-import type { FullFrameIdentification } from "./recognition/messages"
+import type { FrameDetection, FullFrameIdentification } from "./recognition/messages"
 import type { Quad } from "./recognition/pipeline"
 
 export interface SuperAiOverlayCard {
@@ -7,9 +7,14 @@ export interface SuperAiOverlayCard {
   quad: Quad
 }
 
+export type SuperAiDetection = FrameDetection
+
 export const SUPER_AI_MARGIN_DEFAULT = CLEAR_MARGIN
-export const SUPER_AI_MARGIN_MIN = 0.02
+export const SUPER_AI_MARGIN_MIN = 0
 export const SUPER_AI_MARGIN_MAX = 0.2
+export const SUPER_AI_SCAN_INTERVAL_MIN_SECONDS = 1
+export const SUPER_AI_SCAN_INTERVAL_MAX_SECONDS = 15
+export const SUPER_AI_SCAN_INTERVAL_DEFAULT_SECONDS = 5
 
 export function overlayCardsFromScan(
   result: FullFrameIdentification,
