@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -141,7 +142,11 @@ def run_phase(phase: Phase, resume: Path | None) -> None:
         return
     cmd = build_command(phase, resume)
     print(f"[run] {phase.name}: {' '.join(cmd)}", flush=True)
-    subprocess.run(cmd, check=True, cwd=Path(__file__).resolve().parent.parent)
+    # Force unbuffered stdout on the child: it prints one JSON line per epoch, but stdout is
+    # block-buffered (not line-buffered) once redirected to a file/pipe rather than a TTY, so
+    # without this a log tail can sit stale for many completed epochs before a flush happens.
+    child_env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    subprocess.run(cmd, check=True, cwd=Path(__file__).resolve().parent.parent, env=child_env)
     if not (RUNS_DIR / phase.name / "best.pt").exists():
         raise SystemExit(f"{phase.name} finished but produced no best.pt")
 
@@ -178,7 +183,7 @@ def evaluate(checkpoint: Path, run_name: str) -> dict:
     out_path = DATA_DIR / f"confusion-matrix-{run_name}.json"
     cmd = [sys.executable, "-m", "cardid.confusion_matrix", "--checkpoint", str(checkpoint), "--out", str(out_path)]
     print(f"[run] evaluate: {' '.join(cmd)}", flush=True)
-    subprocess.run(cmd, check=True, cwd=Path(__file__).resolve().parent.parent)
+    subprocess.run(cmd, check=True, cwd=Path(__file__).resolve().parent.parent, env={**os.environ, "PYTHONUNBUFFERED": "1"})
     report = json.loads(out_path.read_text())
     real = report.get("real_captures")
     print(f"real_captures: {json.dumps(real)}")
