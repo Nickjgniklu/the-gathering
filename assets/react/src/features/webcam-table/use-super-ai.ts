@@ -54,6 +54,7 @@ export function useSuperAi(
 ) {
   const incomingRef = useRef<Incoming | null>(null)
   const pendingRef = useRef<{ target: string; requestId: string; timeout: number } | null>(null)
+  const recognizingRef = useRef(false)
   const lastRequestRef = useRef(new Map<string, number>())
   const lastAnsweredRef = useRef(new Map<string, number>())
   const [status, setStatus] = useState<"idle" | "requesting" | "scanning" | "failed">("idle")
@@ -148,6 +149,7 @@ export function useSuperAi(
       )
         return
       setStatus("scanning")
+      recognizingRef.current = true
       try {
         await onFrame({
           peerId: fromPeerId,
@@ -159,6 +161,8 @@ export function useSuperAi(
         setStatus("idle")
       } catch {
         setStatus("failed")
+      } finally {
+        recognizingRef.current = false
       }
     },
     [clearIncoming, link, onFrame],
@@ -252,6 +256,7 @@ export function useSuperAi(
     (target: string) => {
       const now = Date.now()
       if (now - (lastRequestRef.current.get(target) ?? -Infinity) < scanIntervalMs) return false
+      if (recognizingRef.current) return false
       // Your own board never leaves your browser at all: skip the peer transport (chunking,
       // digest, the round trip) and recognize the frame you already have locally.
       if (target === link.peerId) {
@@ -260,6 +265,7 @@ export function useSuperAi(
         if (!captured) return false
         lastRequestRef.current.set(target, now)
         setStatus("scanning")
+        recognizingRef.current = true
         const data = bytes(captured.image.slice(captured.image.indexOf(",") + 1))
         onFrame({ peerId: target, bytes: data, width: captured.width, height: captured.height })
           .then(() => {
@@ -267,6 +273,9 @@ export function useSuperAi(
             setStatus("idle")
           })
           .catch(() => setStatus("failed"))
+          .finally(() => {
+            recognizingRef.current = false
+          })
         return true
       }
       if (pendingRef.current) return false

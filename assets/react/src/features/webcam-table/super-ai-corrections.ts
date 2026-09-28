@@ -110,7 +110,11 @@ export function useSuperAiCorrections(roomId: string, viewerPeerId: string, boar
   const save = useCallback(
     (next: SuperAiCorrection[]) => {
       setCorrections(next)
-      localStorage.setItem(key, JSON.stringify(next))
+      try {
+        localStorage.setItem(key, JSON.stringify(next))
+      } catch {
+        /* Storage may be disabled; retain the correction for this session. */
+      }
     },
     [key],
   )
