@@ -3,9 +3,8 @@
  * Runs the published card-recognition bundle with onnxruntime-web off the main thread.
  *
  * Mirrors `ml/cardid/bundle.py` step for step (see `pipeline.ts` for the maths): two detector
- * passes, one embed pass, one gallery search. Uses the WASM backend so results match the
- * Python parity check bit-for-bit modulo float rounding; WebGPU is a later switch
- * (`onnxruntime-web/webgpu` + the jsep wasm pair) once its per-op coverage is measured.
+ * passes, one embed pass, one gallery search. It prefers WebGPU but falls back atomically to
+ * the single-threaded WASM runtime when the device or any model graph is unsupported.
  */
 import * as ort from "onnxruntime-web/wasm"
 import mjsUrl from "onnxruntime-web/ort-wasm-simd-threaded.mjs?url"
@@ -80,26 +79,47 @@ async function fetchBytes(url: string): Promise<Uint8Array> {
   return new Uint8Array(await response.arrayBuffer())
 }
 
-async function session(url: string): Promise<ort.InferenceSession> {
-  return ort.InferenceSession.create(await fetchBytes(url), {
-    executionProviders: ["wasm"],
+async function session(
+  runtime: typeof ort,
+  provider: "webgpu" | "wasm",
+  url: string,
+): Promise<ort.InferenceSession> {
+  return runtime.InferenceSession.create(await fetchBytes(url), {
+    executionProviders: [provider],
     graphOptimizationLevel: "all",
   })
 }
 
-async function optionalSession(url: string | undefined): Promise<ort.InferenceSession | null> {
-  return url ? session(url) : null
+async function optionalSession(
+  runtime: typeof ort,
+  provider: "webgpu" | "wasm",
+  url: string | undefined,
+): Promise<ort.InferenceSession | null> {
+  return url ? session(runtime, provider, url) : null
 }
 
 async function load(bundle: BundleInfo) {
   const started = performance.now()
-  const [detector, embed, search, tableDetector, artsBytes] = await Promise.all([
-    optionalSession(bundle.files["detector.onnx"]),
-    optionalSession(bundle.files["embed.onnx"]),
-    optionalSession(bundle.files["search.onnx"]),
-    optionalSession(bundle.files["table_detector.onnx"]),
-    bundle.files["arts.json"] ? fetchBytes(bundle.files["arts.json"]) : null,
-  ])
+  const sessions = async (runtime: typeof ort, provider: "webgpu" | "wasm") =>
+    Promise.all([
+      optionalSession(runtime, provider, bundle.files["detector.onnx"]),
+      optionalSession(runtime, provider, bundle.files["embed.onnx"]),
+      optionalSession(runtime, provider, bundle.files["search.onnx"]),
+      optionalSession(runtime, provider, bundle.files["table_detector.onnx"]),
+    ])
+  let detector: ort.InferenceSession | null
+  let embed: ort.InferenceSession | null
+  let search: ort.InferenceSession | null
+  let tableDetector: ort.InferenceSession | null
+  try {
+    ;[detector, embed, search, tableDetector] = await sessions(
+      (await import("onnxruntime-web/webgpu")) as typeof ort,
+      "webgpu",
+    )
+  } catch {
+    ;[detector, embed, search, tableDetector] = await sessions(ort, "wasm")
+  }
+  const artsBytes = bundle.files["arts.json"] ? await fetchBytes(bundle.files["arts.json"]) : null
   const arts = artsBytes ? (JSON.parse(new TextDecoder().decode(artsBytes)) as GalleryArt[]) : []
   loaded = {
     version: bundle.version,

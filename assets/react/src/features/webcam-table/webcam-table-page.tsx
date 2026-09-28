@@ -275,7 +275,13 @@ function LiveRoom({ roomId, playerId, playerName, decks }: LiveRoomProps) {
         onNotSuperAiCard={superAiCorrections.hide}
         superAiPreview={previewingSuperAiCard}
         onPreviewSuperAiCard={setPreviewingSuperAiCard}
-        onResetSuperAiCards={superAiCorrections.reset}
+        onResetSuperAiCards={() => {
+          superAiCorrections.reset()
+          setCorrectingSuperAiCard(null)
+          setPreviewingSuperAiCard(null)
+          setSuperAiCards({ cards: [], detections: [], source: null })
+          setSuperAiDebug(null)
+        }}
       />
 
       <SuperAiCardSearch
