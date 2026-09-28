@@ -40,23 +40,26 @@ from torch.nn import functional as F
 from .table_detector import TABLE_INPUT, TABLE_STRIDE, TableCenterNet
 from .tiled_inference import tile_boxes
 
-NATIVE_SIZE = 640  # table_scenes.py's stored image resolution (manifest width/height)
+NATIVE_SIZE = 640  # default: table_scenes.py's stored image resolution (manifest width/height).
+# `TiledFusionDetector(native_size=...)` overrides this per instance -- e.g. 1920 to match the
+# deployed webcam's real capture resolution (camera.ts requests {width:1920, height:1080}); the
+# geometry below is computed per instance, not as a module-level constant, so both sizes coexist.
 TILE_GRID = (2, 2)
 TILE_OVERLAP = 0.2
 CANONICAL_STRIDE = TABLE_STRIDE  # keep the same physical stride (pixels/cell) as the frozen model
-CANONICAL_GRID = NATIVE_SIZE // CANONICAL_STRIDE  # 160
+CANONICAL_GRID = NATIVE_SIZE // CANONICAL_STRIDE  # 160, at the default NATIVE_SIZE
 N_TILES = TILE_GRID[0] * TILE_GRID[1]
 SLOT_CHANNELS = 1 + 3 + 2 + 1  # heat + pose(3) + up(2) + valid mask
 
 
-def _tile_geometry() -> list[tuple[int, int, int, int, int, int, float]]:
-    """Precomputed, fixed for every image (same `NATIVE_SIZE`/`TILE_GRID`/`TILE_OVERLAP`
+def tile_geometry(native_size: int) -> list[tuple[int, int, int, int, int, int, float]]:
+    """Fixed for every image of a given `native_size` (same `TILE_GRID`/`TILE_OVERLAP`
     everywhere): per tile, (ix0, iy0, ix1, iy1) in native pixels, (gx0, gy0) canonical-grid
     placement origin, and `log_scale` = log(native tile width / `TABLE_INPUT`) -- the additive
     correction `build_targets`' log-short pose channel needs when a tile's own `TABLE_INPUT`-space
     "short side" length is expressed in native-image pixels instead (see module docstring)."""
     geometry = []
-    for x0, y0, x1, y1 in tile_boxes(NATIVE_SIZE, NATIVE_SIZE, TILE_GRID, TILE_OVERLAP):
+    for x0, y0, x1, y1 in tile_boxes(native_size, native_size, TILE_GRID, TILE_OVERLAP):
         ix0, iy0, ix1, iy1 = round(x0), round(y0), round(x1), round(y1)
         gx0, gy0 = round(ix0 / CANONICAL_STRIDE), round(iy0 / CANONICAL_STRIDE)
         log_scale = float(np.log((ix1 - ix0) / TABLE_INPUT))
@@ -64,7 +67,7 @@ def _tile_geometry() -> list[tuple[int, int, int, int, int, int, float]]:
     return geometry
 
 
-TILE_GEOMETRY = _tile_geometry()
+TILE_GEOMETRY = tile_geometry(NATIVE_SIZE)  # kept for any existing caller still using the default
 
 
 class FusionHead(nn.Module):
@@ -94,13 +97,20 @@ class FusionHead(nn.Module):
 
 class TiledFusionDetector(nn.Module):
     """Wraps a frozen `TableCenterNet` (loaded from `checkpoint`, never updated by training) with
-    a trainable `FusionHead`. `forward` takes native `NATIVE_SIZE`x`NATIVE_SIZE` RGB images
+    a trainable `FusionHead`. `forward` takes native `native_size`x`native_size` RGB images
     (N,3,H,W) already normalised the way `data.to_tensor` produces, and returns fused (heat
-    logits, pose, up) at `CANONICAL_GRID` resolution -- a drop-in replacement for
-    `TableCenterNet.forward`'s return shape, just at a different, larger grid size."""
+    logits, pose, up) at `canonical_grid` resolution -- a drop-in replacement for
+    `TableCenterNet.forward`'s return shape, just at a different, larger grid size. Note that
+    `fusion`'s weights are trained for one specific `native_size` (its input channel count and
+    receptive field are tied to that resolution's tile geometry); passing a different
+    `native_size` at construction time needs its own separately-trained `FusionHead`, not just a
+    different checkpoint of the same shape."""
 
-    def __init__(self, checkpoint: str | None = None):
+    def __init__(self, checkpoint: str | None = None, native_size: int = NATIVE_SIZE):
         super().__init__()
+        self.native_size = native_size
+        self.canonical_grid = native_size // CANONICAL_STRIDE
+        self.tile_geometry = tile_geometry(native_size)
         self.frozen = TableCenterNet(pretrained=False)
         if checkpoint is not None:
             self.frozen.load_state_dict(torch.load(checkpoint, map_location="cpu", weights_only=True))
@@ -122,7 +132,7 @@ class TiledFusionDetector(nn.Module):
         with a plain `.view`."""
         n = images.shape[0]
         crops = images.new_empty((N_TILES, n, 3, TABLE_INPUT, TABLE_INPUT))
-        for t, (ix0, iy0, ix1, iy1, *_rest) in enumerate(TILE_GEOMETRY):
+        for t, (ix0, iy0, ix1, iy1, *_rest) in enumerate(self.tile_geometry):
             crop = images[:, :, iy0:iy1, ix0:ix1]
             crops[t] = F.interpolate(crop, size=(TABLE_INPUT, TABLE_INPUT), mode="bilinear", align_corners=False)
         return crops.reshape(N_TILES * n, 3, TABLE_INPUT, TABLE_INPUT)
@@ -134,8 +144,8 @@ class TiledFusionDetector(nn.Module):
         heat = heat.view(N_TILES, n, *heat.shape[1:])
         pose = pose.view(N_TILES, n, *pose.shape[1:])
         up = up.view(N_TILES, n, *up.shape[1:])
-        slots = heat.new_zeros((n, N_TILES * SLOT_CHANNELS, CANONICAL_GRID, CANONICAL_GRID))
-        for t, (ix0, iy0, ix1, iy1, gx0, gy0, log_scale) in enumerate(TILE_GEOMETRY):
+        slots = heat.new_zeros((n, N_TILES * SLOT_CHANNELS, self.canonical_grid, self.canonical_grid))
+        for t, (ix0, iy0, ix1, iy1, gx0, gy0, log_scale) in enumerate(self.tile_geometry):
             fw, fh = round(ix1 / CANONICAL_STRIDE) - gx0, round(iy1 / CANONICAL_STRIDE) - gy0
             tile_pose = pose[t].clone()
             tile_pose[:, :1] = tile_pose[:, :1] + log_scale  # log-short: tile-space -> native-space

@@ -27,14 +27,14 @@ from .training_runtime import add_runtime_args, make_loader, setup, write_run_me
 
 
 @torch.no_grad()
-def evaluate_val(model: TiledFusionDetector, rows: list[dict], root: Path, device: torch.device, score_threshold: float, limit: int) -> dict:
+def evaluate_val(model: TiledFusionDetector, rows: list[dict], root: Path, device: torch.device, score_threshold: float, limit: int, native_size: int) -> dict:
     model.eval()
     hits_total, truth_total, found_total = 0, 0, 0
     for row in rows[:limit]:
         image = cv2.cvtColor(cv2.imread(str(root / row["image"])), cv2.COLOR_BGR2RGB)
-        scale = NATIVE_SIZE / row["width"]
+        scale = native_size / row["width"]
         interp = cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR
-        resized = cv2.resize(image, (NATIVE_SIZE, NATIVE_SIZE), interpolation=interp)
+        resized = cv2.resize(image, (native_size, native_size), interpolation=interp)
         x = to_tensor(resized).unsqueeze(0).to(device)
         heat, pose, up = model(x)
         detections = decode_detections(heat[0], pose[0], up[0], CANONICAL_STRIDE, score_threshold)
@@ -67,6 +67,7 @@ def main() -> None:
     parser.add_argument("--val-limit", type=int, default=60)
     parser.add_argument("--score-threshold", type=float, default=0.3)
     parser.add_argument("--resume", help="warm-start the fusion head only (weights, not optimizer/schedule/history)")
+    parser.add_argument("--native-size", type=int, default=NATIVE_SIZE, help="must match the manifest's stored --resolution")
     add_runtime_args(parser, "dataset-loading worker processes")
     args = parser.parse_args()
     runtime = setup(args, "loading")
@@ -82,11 +83,11 @@ def main() -> None:
     val_rows = load_scenes(args.manifest_dir / "val" / "manifest.jsonl", "val")
     if not train_rows:
         raise SystemExit(f"no train scenes in {args.manifest_dir}")
-    train_set = TiledFusionDataset(train_rows, args.manifest_dir / "train")
+    train_set = TiledFusionDataset(train_rows, args.manifest_dir / "train", native_size=args.native_size)
     loader = make_loader(train_set, args.batch, runtime)
     print(f"train: {len(train_rows)} scenes, {len(loader)} batches/epoch; val: {len(val_rows)} scenes ({args.val_limit} scored/epoch)")
 
-    model = TiledFusionDetector(checkpoint=args.checkpoint).to(device)
+    model = TiledFusionDetector(checkpoint=args.checkpoint, native_size=args.native_size).to(device)
     if args.resume:
         model.fusion.load_state_dict(torch.load(args.resume, map_location=device, weights_only=True))
         print(f"warm-started fusion head from {args.resume}")
@@ -109,7 +110,7 @@ def main() -> None:
             losses.append(loss.item())
             for k, v in parts.items():
                 parts_sum[k] += v
-        metrics = evaluate_val(model, val_rows, args.manifest_dir / "val", device, args.score_threshold, args.val_limit)
+        metrics = evaluate_val(model, val_rows, args.manifest_dir / "val", device, args.score_threshold, args.val_limit, args.native_size)
         entry = {
             "epoch": epoch,
             "loss": float(np.mean(losses)),
