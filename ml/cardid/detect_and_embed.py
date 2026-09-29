@@ -188,15 +188,18 @@ class DetectAndEmbed(nn.Module):
         images_expanded = images.unsqueeze(1).expand(-1, self.max_cards, -1, -1, -1).reshape(n * self.max_cards, 3, self.native_size, self.native_size)
 
         # One crop per frame hypothesis, each at that frame's own native (possibly non-square)
-        # aspect before rotation/resize -- see module docstring for why the order matters.
-        per_frame_embeddings = []
+        # aspect before rotation/resize -- see module docstring for why the order matters. All 14
+        # frames' crops are concatenated into one batch for a single `self.embed` call (one kernel
+        # launch instead of 14) rather than embedding each frame separately.
+        per_frame_crops = []
         for box, (raw_w, raw_h), k in zip(_FRAME_BOXES, _FRAME_RAW_SIZE, _FRAME_ROTATION_K):
             grid = _sampling_grid(cx_flat, cy_flat, short_flat, angle_flat, self.native_size, box, raw_w, raw_h)
             crop = F.grid_sample(images_expanded, grid, mode="bilinear", align_corners=True)
             crop = _rot90(crop, k)
-            crop = F.interpolate(crop, size=(INPUT_SIZE, INPUT_SIZE), mode="bilinear", align_corners=False)
-            per_frame_embeddings.append(self.embed(crop))
-        embeddings = torch.stack(per_frame_embeddings, dim=1).view(n, self.max_cards, N_FRAMES, EMBED_DIM)
+            per_frame_crops.append(F.interpolate(crop, size=(INPUT_SIZE, INPUT_SIZE), mode="bilinear", align_corners=False))
+        all_crops = torch.cat(per_frame_crops, dim=0)  # (N_FRAMES * n * max_cards, 3, INPUT_SIZE, INPUT_SIZE)
+        all_embeddings = self.embed(all_crops)  # one batched call instead of N_FRAMES separate ones
+        embeddings = all_embeddings.view(N_FRAMES, n, self.max_cards, EMBED_DIM).permute(1, 2, 0, 3)
 
         half_short, half_long = short / 2, short * CARD_ASPECT / 2
         local = torch.stack([torch.stack([-half_short, -half_long], -1), torch.stack([half_short, -half_long], -1),
