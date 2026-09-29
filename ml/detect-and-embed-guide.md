@@ -5,18 +5,21 @@ Code: `ml/cardid/detect_and_embed.py`, branch `feat/reproduce-table-detector-tra
 
 ## What it is
 
-One `nn.Module` (and one ONNX graph) that does detection, cropping, and embedding in a single
-forward pass: given a full frame, find every card, warp each one straight to the recogniser's
-input, and embed all of them in parallel. It wires together two already-trained, frozen models —
-a table detector and the existing `Embedder` — through a new batched crop layer; **it trains
-nothing itself and contains no learned weights of its own.**
+One `nn.Module` (and one ONNX graph) that does detection, cropping, and embedding — for every one
+of the 14 frame hypotheses `search.onnx` expects — in a single forward pass: given a full frame,
+find every card, warp each one straight to the recogniser's input, and embed all of them in
+parallel. It wires together two already-trained, frozen models — a table detector and the existing
+`Embedder` — through a new batched crop layer; **it trains nothing itself and contains no learned
+weights of its own.**
 
 ```python
 embeddings, scores, quads = model(images)
 ```
 
 - `images`: `(N, 3, native_size, native_size)` — already normalized (see Input contract below).
-- `embeddings`: `(N, MAX_CARDS, 128)` — L2-normalized, one per detection slot.
+- `embeddings`: `(N, MAX_CARDS, 14, 128)` — L2-normalized, 14 frame hypotheses (`detect.FRAME_NAMES`
+  order) per detection slot. `embeddings[n, k]` is ready to feed `search.onnx` directly for slot
+  `k`, the same contract `embed.onnx`'s own `(scene, quad) -> (14, 128)` output has.
 - `scores`: `(N, MAX_CARDS)` — the detector's confidence for that slot, sigmoid-space, `[0, 1]`.
 - `quads`: `(N, MAX_CARDS, 4, 2)` — each card's 4 corners, full-image pixel coordinates, in the
   same order `table_detector.decode_detections` produces.
@@ -107,67 +110,47 @@ detector variant without re-checking against the golden real-capture set.
 the 180-degree ambiguity in the detector's raw angle output internally; you get back a quad whose
 corner order matches `decode_detections`' convention directly. No further reordering needed.
 
-**Embeddings are a *single* frame hypothesis (`DEFAULT_FRAME = "modern"`), not all fourteen.**
-This is the detail most likely to trip up a real integration. The production gallery search
-(`search.onnx`, built from `graphs.SearchGraph`) expects **14** embeddings per query — one per
-`detect.FRAME_NAMES` entry — because it looks up each gallery art's *own* frame index into that
-14-row batch (`sims.gather(1, self.frames)`) to compare it against the correct hypothesis. Passing
-`DetectAndEmbed`'s `(N, MAX_CARDS, 128)` output (one embedding per card, not 14) into the existing
-`search.onnx` as-is is **not compatible** — it will either error (frame index out of range for any
-gallery art whose native frame isn't index 0) or, if you reshape around that, silently compare
-against the wrong hypothesis for every non-modern-frame gallery entry. Confirmed by reading
-`SearchGraph.forward` directly, not assumed.
+**Embeddings cover all 14 frame hypotheses (`detect.FRAME_NAMES`), fixed.** An earlier version of
+this module cropped only the "modern" window per card, making its output incompatible with the
+real `search.onnx` (which expects 14 embeddings per query -- one per `FRAME_NAMES` entry -- and
+looks up each gallery art's *own* frame index into that batch). `embeddings` is now
+`(N, MAX_CARDS, 14, 128)`; `embeddings[n, k]` can be passed to `search.onnx` directly, exactly like
+`embed.onnx`'s own `(scene, quad) -> (14, 128)` output. Each frame's window is cropped at its own
+native (possibly non-square) aspect ratio, rotated per `detect.FRAME_ROTATIONS` (`_rot90` -- a
+transpose+flip reimplementation of `torch.rot90`, which has no ONNX opset-18 exporter), *then*
+resized to `INPUT_SIZE`-square -- matching `detect.frame_crop`'s crop-then-rotate-then-resize
+order exactly; resizing before rotating would squash a non-square box along the wrong axis for the
+six frames with a 90/270-degree rotation. Verified against `detect.art_crops` directly: cosine
+similarity 0.985+ on all 14 frames, including every rotated one (`test_detect_and_embed.py`'s
+`FrameGeometryTest` locks in the box/rotation tables without needing a checkpoint).
 
-Three real options, none implemented yet:
-1. **Extend the crop layer to produce all 14 frame-window crops per card** (stack more crops the
-   same way tiles are stacked today — the module docstring already flags this as "a
-   straightforward extension, not a redesign") and embed all 14, matching `embed.onnx`'s own
-   `(scene, quad) -> (14, 128)` contract exactly.
-2. **Export a simplified search graph** that skips frame-aware lookup entirely (plain top-k
-   cosine similarity against a single embedding, no `frames`/`penalties` buffers) — cheaper to
-   build, but throws away the frame-penalty calibration the real gallery search already has, and
-   will under-perform on non-modern-frame cards specifically (this module only ever crops the
-   "modern" window, so a non-modern card's crop is *already* systematically wrong before search
-   even happens with option 2 -- option 1 is the only one that actually fixes that).
-3. **Accept degraded matching on non-modern-frame cards** and ship as-is for now, revisiting if
-   real usage shows this matters. Reasonable for point-and-click (most cards are modern-frame);
-   less reasonable for a full-table Super AI scan where non-standard frames come up often enough
-   that this project built a whole training phase around them.
+## Tested end-to-end (`evaluate_detect_and_embed.py`), with a real embedder and the real search math
 
-The earlier end-to-end validation in this session's history (the "full pipeline test" scoring
-92.9%/93.3% top-1 identification) used the *separate*, existing `embed.onnx` (scene, quad) call
-for the embedding step, deliberately bypassing this gotcha — it validated the detection+crop
-geometry, not `DetectAndEmbed`'s own embedding output wired to search end-to-end. Don't cite that
-number as proof this module's embeddings work with `search.onnx` today; they don't, yet.
+Using the recovered real `Embedder` checkpoint (`recogniser-cfbender-oracle`) and a torch
+reimplementation of `graphs.SearchGraph.forward`'s own per-frame-gather math (not a
+simplification -- `DetectAndEmbed` now produces the same 14-embedding-per-card shape
+`search.onnx` itself expects), on 10 gallery-verified synthetic scenes (63 cards):
 
-## Tested end-to-end (`evaluate_detect_and_embed.py`), with a real embedder
+| detector | native_size | detection recall | identification top1 / top5 (all frames) |
+|---|---|---|---|
+| single-pass | 384 | 98.4% | 74.2% / 85.5% |
+| tiled-fusion-1920 | 1920 | 93.7% | **90.3%** / 91.9% |
 
-Using the recovered real `Embedder` checkpoint (`recogniser-cfbender-oracle`) and a simplified
-single-embedding gallery search (bypassing the `search.onnx` incompatibility above by comparing
-this module's own embedding directly against the gallery's raw vectors, extracted from
-`search.onnx`'s ONNX initializers -- see `evaluate_detect_and_embed.load_gallery`), on 10
-gallery-verified synthetic scenes (63 cards):
-
-| detector | native_size | detection recall | modern-frame top1 / top5 | non-modern top1 / top5 |
-|---|---|---|---|---|
-| single-pass | 384 | 98.4% | 72.7% / 84.1% | 77.8% / 88.9% |
-| tiled-fusion-1920 | 1920 | 93.7% | **93.0%** / 95.3% | 78.9% / 84.2% |
-
-**A real, previously-undocumented finding, not a bug:** single-pass `DetectAndEmbed` identifies
-meaningfully worse than the reference `embed.onnx` pipeline (72.7% vs. the 92.9% cited above) --
-not because its crop math is wrong (verified pixel-identical to the reference crop for a
-land card, cosine similarity 0.997+ against the reference embedding for the same card, see
-"Constructing it" above), but because at `native_size=384` the crop has to come from an
-*already-downsampled* 384px canvas: a normal card is only ~40px across on that canvas, and
-upsampling that to the embedder's 128px input for a good embedding loses fine art detail the
-reference pipeline never throws away (it crops from the *original*, undownsampled image). Running
-the same embedding step through the tiled-fusion detector instead -- which keeps the crop source
-at true native resolution -- closes almost the entire gap (93.0%, matching the reference number).
-**If embedding quality matters more than latency, prefer wrapping a `TiledFusionDetector` even for
-a smaller capture area, or extend `DetectAndEmbed` to crop from a higher-resolution source image
-than the one fed to a single-pass detector** (not implemented -- would need decoupling the
-detector's own input resolution from the crop layer's source resolution, currently the same
-`native_size` for both).
+Per-frame breakdown (small samples per non-modern frame, but the pattern holds): non-modern frames
+(`old`, `tall`, `right`, `extended`) now score *comparably* to modern, not systematically worse --
+confirming the 14-hypothesis fix closes the gap for those cards specifically, not just for modern
+ones. Before the fix, an earlier (mistaken) measurement using only the modern-frame embedding
+found single-pass topping out at 72.7% even on modern-frame cards specifically; **that number was
+capped by `native_size=384`'s already-downsampled crop source, not the frame-hypothesis gap** --
+a card is only ~40px across on that canvas, and upsampling that for the embedder loses fine art
+detail the reference pipeline (which crops from the *original*, undownsampled image) never throws
+away. Running the same embedding step through the tiled-fusion detector instead -- true native
+resolution -- closes nearly all of that gap (90.3% vs. single-pass's 74.2%). **If embedding
+quality matters more than latency, prefer wrapping a `TiledFusionDetector` even for a smaller
+capture area, or extend `DetectAndEmbed` to crop from a higher-resolution source image than the
+one fed to a single-pass detector** (not implemented -- would need decoupling the detector's own
+input resolution from the crop layer's source resolution, currently the same `native_size` for
+both).
 
 One bug found and fixed *in the test harness itself* while building this, not in `DetectAndEmbed`:
 an early version zipped ground-truth cards (scene order) directly against detected slots (score
@@ -204,14 +187,32 @@ for o, t in zip(onnx_out, torch_out):
     print(np.abs(o - t.numpy()).max())  # ~1e-8 (embeddings/scores), ~1e-2 (quad pixel coords)
 ```
 
-File size with the real embedder: 8.1MB (single-pass). Not yet re-measured for the tiled-fusion
-variant with the real embedder (early testing with a placeholder embedder put it at ~42MB, since
-it carries 4 tile passes' worth of intermediate compute graph plus the fusion head).
+File size and native PyTorch latency (this desktop, CPU 4 threads / GPU RX 7900 GRE via ROCm --
+not the deployed onnxruntime-web path, a relative-cost proxy only), with the real embedder and all
+14 frame hypotheses:
+
+| detector | file size | CPU | GPU |
+|---|---|---|---|
+| single-pass | 10.2MB | 293ms | 142ms |
+| tiled-fusion-1920 | 44.3MB | 435ms | 142ms |
+
+Both converge to the same GPU number because embedding now dominates either detector's total cost
+(20 cards x 14 frames = 280 embedder passes per image, batched into one call -- see "Known
+simplifications" below). That is roughly **14x** the single-frame version's latency, by
+construction (14 crop-and-embed passes per card instead of one): the earlier single-frame numbers
+were single-pass 20ms / tiled-fusion 21ms on GPU. Batching all 14 frames' crops into one
+`self.embed` call (rather than 14 separate calls) roughly halved the GPU number (was ~240ms/207ms)
+but did not meaningfully change CPU, which was already compute- rather than kernel-launch-bound.
+**At ~142ms/frame even on GPU, this is not yet real-time-per-frame** (roughly 7fps) -- worth
+knowing before assuming the frame-hypothesis fix is free.
 
 ## Known simplifications (all deliberate, all documented as extension points, not dead ends)
 
 - **Fixed top-20 detections, not a threshold** — see above; caller must threshold `scores`.
-- **One frame hypothesis only** — see above; blocks direct `search.onnx` compatibility today.
+- **~142ms/frame on GPU even after batching** — see the latency table above. The MAX_CARDS=20
+  budget is the other lever besides frame count: most real scenes have far fewer real cards, so a
+  smaller fixed budget (fewer wasted embed passes on padding slots) is the next thing to try if
+  this needs to be faster, before considering an architectural change.
 - **`native_size` is fixed at construction, not runtime.** Feeding a different-sized image than
   the one passed to `__init__` will produce wrong (not necessarily crashing) output — the crop
   geometry and canonical-grid math are baked in at construction time. Build a new instance per
