@@ -1,39 +1,41 @@
 """One combined model: `TableCenterNet` (frozen) finds every card on the table, a new batched
-crop layer warps each one straight to the recogniser's input, and `Embedder` (frozen) embeds all
-of them in one parallel pass -- the "multi-model, one accelerated forward pass" pipeline, wiring
-together two already-separately-trained models rather than training anything new for this first
-version (see `tiled_fusion.py` for the separate, also-already-shipped "frozen backbone + new
-trainable layers" idea; this module trains nothing at all yet).
+crop layer warps each one straight to the recogniser's input for *every* frame hypothesis, and
+`Embedder` (frozen) embeds all of them in one parallel pass -- the "multi-model, one accelerated
+forward pass" pipeline, wiring together two already-separately-trained models rather than training
+anything new (see `tiled_fusion.py` for the separate, also-already-shipped "frozen backbone + new
+trainable layers" idea; this module trains nothing at all itself).
 
-Two deliberate simplifications for this first version, both because the ask was to keep it
-simple before combining further, not because they are the only way to do this:
+One remaining deliberate simplification: **fixed top-`MAX_CARDS` detections, not a score
+threshold.** `decode_detections` returns a variable-length list (however many peaks clear
+`score_threshold`), which is awkward for a single static-shaped exported graph. This takes the
+top `MAX_CARDS` local-maxima by score unconditionally (`_topk_peaks`) and returns their scores
+alongside; a low-confidence slot's score is still there for the caller to threshold at display
+time, same as today, just not baked into the graph's control flow.
 
-  * **Fixed top-`MAX_CARDS` detections, not a score threshold.** `decode_detections` returns a
-    variable-length list (however many peaks clear `score_threshold`), which is awkward for a
-    single static-shaped exported graph. This takes the top `MAX_CARDS` local-maxima by score
-    unconditionally (`_topk_peaks`) and returns their scores alongside; a low-confidence slot's
-    score is still there for the caller to threshold at display time, same as today, just not
-    baked into the graph's control flow.
+**All 14 frame hypotheses (`detect.FRAME_NAMES`), not just "modern".** An earlier version of this
+module cropped only the "modern" window per card, which made its embedding output incompatible
+with the real `search.onnx` (it expects 14 embeddings per query -- one per `FRAME_NAMES` entry --
+and looks up each gallery art's own frame index into that batch). This version crops and embeds
+all 14 the same way `detect.art_crops` does, so `embeddings` is now `(N, MAX_CARDS, 14, 128)` and
+`embeddings[n, k]` can be fed to `search.onnx` directly, exactly like `embed.onnx`'s own
+`(scene, quad) -> (14, 128)` output -- no separate `embed.onnx` call needed:
 
-  * **One frame hypothesis (`DEFAULT_FRAME = "modern"`), not all six.** The real pipeline tries
-    every entry in `detect.FRAME_NAMES` per card because a card's frame style (which fraction of
-    it is art vs. border) isn't known from its quad alone, and picks whichever scores best
-    against the gallery (`index.frame_similarities`). Modern is the most common frame by far;
-    trying the rest is a straightforward extension (stack more crops per card the same way this
-    stacks tiles) once this simpler version is validated, not a redesign.
+    DetectAndEmbed -> search.onnx   # instead of: DetectAndEmbed -> embed.onnx -> search.onnx
 
-The crop itself is *exactly* representable as an affine warp, not an approximation of one: every
-quad this pipeline ever produces comes from `TableCenterNet`'s own (center, short-side, angle)
-pose, which has no skew/perspective term at all (unlike `detect.warp_card`, which perspective-warps
-an arbitrary externally-supplied quad because contour-detected real geometry can be slightly
-keystoned). A rotation+uniform-scale+translation is the exact inverse of how the quad was built,
-so this composes the canonical-card warp and the frame-window crop into one pixel-space sampling
-grid and does the whole thing in a single `grid_sample`, skipping the intermediate 250x350
-canonical card image `warp_card` materialises.
+The crop itself is *exactly* representable as an affine warp for the card-to-canonical step, not
+an approximation of one: every quad this pipeline ever produces comes from `TableCenterNet`'s own
+(center, short-side, angle) pose, which has no skew/perspective term at all (unlike
+`detect.warp_card`, which perspective-warps an arbitrary externally-supplied quad because
+contour-detected real geometry can be slightly keystoned). A rotation+uniform-scale+translation is
+the exact inverse of how the quad was built. Each frame's own window is then cut from that
+canonical card at its own native (possibly non-square) aspect ratio, rotated by
+`detect.FRAME_ROTATIONS` where the reference pipeline does (`torch.rot90`, matching `numpy.rot90`'s
+convention exactly), and *then* squashed to `INPUT_SIZE`-square -- replicating
+`detect.frame_crop`'s crop-then-rotate-then-resize order exactly, not resize-then-rotate, which
+would squash a non-square box along the wrong axis for the 6 frames with a 90/270-degree rotation.
 
 See `ml/detect-and-embed-guide.md` for the full API contract, construction recipes for both
-detector variants, the ONNX export recipe, and -- important before wiring this to a real gallery
-search -- why this module's embedding output isn't yet compatible with `search.onnx` as-is.
+detector variants, and the ONNX export recipe.
 """
 
 from __future__ import annotations
@@ -42,14 +44,21 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from .detect import CARD_ASPECT, CARD_H, CARD_W, FRAME_ASPECT, FRAMES, INPUT_SIZE
+from .detect import CARD_ASPECT, CARD_H, CARD_W, FRAME_NAMES, FRAME_ROTATIONS, INPUT_SIZE, frame_box
 from .model import EMBED_DIM, Embedder
 from .table_detector import TABLE_STRIDE, TableCenterNet
 
 MAX_CARDS = 20  # matches table_scenes.py's own per-scene card-count ceiling
-DEFAULT_FRAME = "modern"
-FRAME_X0, FRAME_Y0, FRAME_X1 = FRAMES[DEFAULT_FRAME]
-FRAME_Y1 = FRAME_Y0 + (FRAME_X1 - FRAME_X0) * CARD_W / FRAME_ASPECT[DEFAULT_FRAME] / CARD_H
+N_FRAMES = len(FRAME_NAMES)  # 14
+
+# Per frame, fixed at import time (frame boxes are constants, not data-dependent): its own
+# (x0, y0, x1, y1) card-fraction box, its own *native* (unrotated, non-square) pixel footprint
+# (a fixed rendering resolution for the pre-rotation crop -- reusing CARD_W/CARD_H as the
+# reference scale, same as `detect.py`'s own 250x350 canonical card, not tied to any card's
+# actual runtime `short` value), and its CCW quarter-turn count.
+_FRAME_BOXES = [frame_box(name) for name in FRAME_NAMES]
+_FRAME_RAW_SIZE = [(max(round((x1 - x0) * CARD_W), 1), max(round((y1 - y0) * CARD_H), 1)) for x0, y0, x1, y1 in _FRAME_BOXES]
+_FRAME_ROTATION_K = [FRAME_ROTATIONS.get(name, 0) for name in FRAME_NAMES]
 
 
 def _topk_peaks(heat_logits: torch.Tensor, pose: torch.Tensor, up: torch.Tensor, stride: int, k: int):
@@ -88,15 +97,32 @@ def _resolve_orientation(angle: torch.Tensor, up_x: torch.Tensor, up_y: torch.Te
     return angle + flip * torch.pi
 
 
-def _sampling_grid(cx: torch.Tensor, cy: torch.Tensor, short: torch.Tensor, angle: torch.Tensor, native_size: int) -> torch.Tensor:
-    """(B, K) pose parameters -> (B*K, INPUT_SIZE, INPUT_SIZE, 2) `grid_sample` grid, normalised
-    to `native_size`, that cuts `DEFAULT_FRAME`'s art window directly out of the full frame in
-    one step (composing the card-rect warp and the frame crop; see module docstring)."""
+def _rot90(x: torch.Tensor, k: int) -> torch.Tensor:
+    """`torch.rot90(x, k, dims=(-2,-1))`, reimplemented with `transpose`/`flip` because
+    `aten::rot90` itself has no ONNX opset-18 exporter (confirmed by trying: `UnsupportedOperatorError`).
+    Verified equal to `torch.rot90` for every `k` in 0..3 before this replaced it."""
+    if k == 0:
+        return x
+    if k == 1:
+        return x.transpose(-2, -1).flip(-2)
+    if k == 2:
+        return x.flip(-2).flip(-1)
+    return x.transpose(-2, -1).flip(-1)  # k == 3
+
+
+def _sampling_grid(
+    cx: torch.Tensor, cy: torch.Tensor, short: torch.Tensor, angle: torch.Tensor, native_size: int, box: tuple[float, float, float, float], out_w: int, out_h: int
+) -> torch.Tensor:
+    """(B, K) pose parameters -> (B*K, out_h, out_w, 2) `grid_sample` grid, normalised to
+    `native_size`, that cuts `box`'s (x0, y0, x1, y1) card-fraction window directly out of the
+    full frame in one step, at `box`'s own native (out_w, out_h) resolution -- composing the
+    card-rect warp and the frame crop, before any rotation/resize (see module docstring)."""
+    x0, y0, x1, y1 = box
     device, dtype = cx.device, cx.dtype
     n = cx.numel()
-    u = torch.linspace(FRAME_X0, FRAME_X1, INPUT_SIZE, device=device, dtype=dtype)
-    v = torch.linspace(FRAME_Y0, FRAME_Y1, INPUT_SIZE, device=device, dtype=dtype)
-    grid_v, grid_u = torch.meshgrid(v, u, indexing="ij")  # (INPUT_SIZE, INPUT_SIZE), card-fraction coords
+    u = torch.linspace(x0, x1, out_w, device=device, dtype=dtype)
+    v = torch.linspace(y0, y1, out_h, device=device, dtype=dtype)
+    grid_v, grid_u = torch.meshgrid(v, u, indexing="ij")  # (out_h, out_w), card-fraction coords
     local_x = (grid_u - 0.5) * short.view(n, 1, 1)  # local box coords, PRINTED-template convention
     local_y = (grid_v - 0.5) * (short.view(n, 1, 1) * CARD_ASPECT)
     cos_a, sin_a = torch.cos(angle).view(n, 1, 1), torch.sin(angle).view(n, 1, 1)
@@ -109,9 +135,11 @@ def _sampling_grid(cx: torch.Tensor, cy: torch.Tensor, short: torch.Tensor, angl
 
 class DetectAndEmbed(nn.Module):
     """Wraps a frozen `TableCenterNet` and a frozen `Embedder`. `forward` takes native
-    `native_size`-square RGB images (N,3,H,W) and returns (embeddings (N,MAX_CARDS,EMBED_DIM),
-    scores (N,MAX_CARDS), quads (N,MAX_CARDS,4,2)) -- `MAX_CARDS` fixed slots per image, sorted
-    by score, in the *same* full-image pixel coordinates `decode_detections` would use."""
+    `native_size`-square RGB images (N,3,H,W) and returns (embeddings
+    (N,MAX_CARDS,N_FRAMES,EMBED_DIM), scores (N,MAX_CARDS), quads (N,MAX_CARDS,4,2)) --
+    `MAX_CARDS` fixed slots per image, sorted by score, in the *same* full-image pixel
+    coordinates `decode_detections` would use. `embeddings[n, k]` is ready to pass to
+    `search.onnx` as-is, in `detect.FRAME_NAMES` order, for slot `k`'s detection."""
 
     def __init__(
         self,
@@ -156,10 +184,19 @@ class DetectAndEmbed(nn.Module):
         heat, pose, up = self.table(images)
         cx, cy, short, angle, up_x, up_y, scores = _topk_peaks(heat, pose, up, TABLE_STRIDE, self.max_cards)
         angle = _resolve_orientation(angle, up_x, up_y)
-        grid = _sampling_grid(cx.reshape(-1), cy.reshape(-1), short.reshape(-1), angle.reshape(-1), self.native_size)
+        cx_flat, cy_flat, short_flat, angle_flat = (t.reshape(-1) for t in (cx, cy, short, angle))
         images_expanded = images.unsqueeze(1).expand(-1, self.max_cards, -1, -1, -1).reshape(n * self.max_cards, 3, self.native_size, self.native_size)
-        crops = F.grid_sample(images_expanded, grid, mode="bilinear", align_corners=True)
-        embeddings = self.embed(crops).view(n, self.max_cards, EMBED_DIM)
+
+        # One crop per frame hypothesis, each at that frame's own native (possibly non-square)
+        # aspect before rotation/resize -- see module docstring for why the order matters.
+        per_frame_embeddings = []
+        for box, (raw_w, raw_h), k in zip(_FRAME_BOXES, _FRAME_RAW_SIZE, _FRAME_ROTATION_K):
+            grid = _sampling_grid(cx_flat, cy_flat, short_flat, angle_flat, self.native_size, box, raw_w, raw_h)
+            crop = F.grid_sample(images_expanded, grid, mode="bilinear", align_corners=True)
+            crop = _rot90(crop, k)
+            crop = F.interpolate(crop, size=(INPUT_SIZE, INPUT_SIZE), mode="bilinear", align_corners=False)
+            per_frame_embeddings.append(self.embed(crop))
+        embeddings = torch.stack(per_frame_embeddings, dim=1).view(n, self.max_cards, N_FRAMES, EMBED_DIM)
 
         half_short, half_long = short / 2, short * CARD_ASPECT / 2
         local = torch.stack([torch.stack([-half_short, -half_long], -1), torch.stack([half_short, -half_long], -1),

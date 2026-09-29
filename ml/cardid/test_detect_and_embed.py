@@ -1,8 +1,10 @@
 """Geometry tests for `detect_and_embed.py`. The crop math was validated once by comparing
 against `detect.warp_card` + `detect.art_crop` on a real rendered scene (mean abs pixel diff 2.7
 of 255, entirely explained by interpolation method differences -- cv2's two-step warp+resize vs.
-one `grid_sample` call); these tests lock in the underlying orientation-resolution logic that
-made that comparison pass, without needing a real checkpoint or a full scene render."""
+one `grid_sample` call), and again for all 14 frame hypotheses against `detect.art_crops`
+(cosine similarity 0.985+ on every frame, including the six with a 90/180/270-degree rotation);
+these tests lock in the underlying orientation-resolution and per-frame-box logic that made both
+comparisons pass, without needing a real checkpoint or a full scene render."""
 
 from __future__ import annotations
 
@@ -11,7 +13,8 @@ import unittest
 
 import torch
 
-from .detect_and_embed import _resolve_orientation, _topk_peaks
+from .detect import FRAME_NAMES
+from .detect_and_embed import N_FRAMES, _FRAME_BOXES, _FRAME_RAW_SIZE, _FRAME_ROTATION_K, _resolve_orientation, _topk_peaks
 
 
 class ResolveOrientationTest(unittest.TestCase):
@@ -66,6 +69,30 @@ class TopkPeaksTest(unittest.TestCase):
         best = int(torch.argmax(scores[0]))
         self.assertAlmostEqual(float(cx[0, best]), (7 + 0.5) * stride, places=4)
         self.assertAlmostEqual(float(cy[0, best]), (3 + 0.5) * stride, places=4)
+
+
+class FrameGeometryTest(unittest.TestCase):
+    def test_one_box_size_and_rotation_per_frame_name(self):
+        self.assertEqual(N_FRAMES, 14)
+        self.assertEqual(len(FRAME_NAMES), N_FRAMES)
+        self.assertEqual(len(_FRAME_BOXES), N_FRAMES)
+        self.assertEqual(len(_FRAME_RAW_SIZE), N_FRAMES)
+        self.assertEqual(len(_FRAME_ROTATION_K), N_FRAMES)
+
+    def test_every_raw_size_is_a_positive_pixel_count(self):
+        for w, h in _FRAME_RAW_SIZE:
+            self.assertGreater(w, 0)
+            self.assertGreater(h, 0)
+
+    def test_rotation_counts_are_quarter_turns(self):
+        for k in _FRAME_ROTATION_K:
+            self.assertIn(k, (0, 1, 2, 3))
+
+    def test_two_part_frames_are_the_ones_with_a_rotation(self):
+        # Matches detect.FRAME_ROTATIONS exactly: every two-part frame except aftermath_0 and
+        # flip_0 rotates; no single-box frame (modern/old/extended/tall/right/left) does.
+        rotated = {name for name, k in zip(FRAME_NAMES, _FRAME_ROTATION_K) if k}
+        self.assertEqual(rotated, {"room_0", "room_1", "split_0", "split_1", "aftermath_1", "flip_1"})
 
 
 if __name__ == "__main__":
