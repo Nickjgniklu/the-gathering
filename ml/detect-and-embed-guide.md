@@ -140,6 +140,44 @@ for the embedding step, deliberately bypassing this gotcha — it validated the 
 geometry, not `DetectAndEmbed`'s own embedding output wired to search end-to-end. Don't cite that
 number as proof this module's embeddings work with `search.onnx` today; they don't, yet.
 
+## Tested end-to-end (`evaluate_detect_and_embed.py`), with a real embedder
+
+Using the recovered real `Embedder` checkpoint (`recogniser-cfbender-oracle`) and a simplified
+single-embedding gallery search (bypassing the `search.onnx` incompatibility above by comparing
+this module's own embedding directly against the gallery's raw vectors, extracted from
+`search.onnx`'s ONNX initializers -- see `evaluate_detect_and_embed.load_gallery`), on 10
+gallery-verified synthetic scenes (63 cards):
+
+| detector | native_size | detection recall | modern-frame top1 / top5 | non-modern top1 / top5 |
+|---|---|---|---|---|
+| single-pass | 384 | 98.4% | 72.7% / 84.1% | 77.8% / 88.9% |
+| tiled-fusion-1920 | 1920 | 93.7% | **93.0%** / 95.3% | 78.9% / 84.2% |
+
+**A real, previously-undocumented finding, not a bug:** single-pass `DetectAndEmbed` identifies
+meaningfully worse than the reference `embed.onnx` pipeline (72.7% vs. the 92.9% cited above) --
+not because its crop math is wrong (verified pixel-identical to the reference crop for a
+land card, cosine similarity 0.997+ against the reference embedding for the same card, see
+"Constructing it" above), but because at `native_size=384` the crop has to come from an
+*already-downsampled* 384px canvas: a normal card is only ~40px across on that canvas, and
+upsampling that to the embedder's 128px input for a good embedding loses fine art detail the
+reference pipeline never throws away (it crops from the *original*, undownsampled image). Running
+the same embedding step through the tiled-fusion detector instead -- which keeps the crop source
+at true native resolution -- closes almost the entire gap (93.0%, matching the reference number).
+**If embedding quality matters more than latency, prefer wrapping a `TiledFusionDetector` even for
+a smaller capture area, or extend `DetectAndEmbed` to crop from a higher-resolution source image
+than the one fed to a single-pass detector** (not implemented -- would need decoupling the
+detector's own input resolution from the crop layer's source resolution, currently the same
+`native_size` for both).
+
+One bug found and fixed *in the test harness itself* while building this, not in `DetectAndEmbed`:
+an early version zipped ground-truth cards (scene order) directly against detected slots (score
+order) -- two unrelated orderings -- making every identification look essentially random until
+caught by visually verifying one specific card's crop against the reference pipeline and finding
+the crop was correct even though the reported name wasn't. Matching each detection to its
+ground-truth card by IoU first, *then* reading that matched card's name, was the fix. Worth
+repeating if you extend this script: a garbled identification result is not automatically a model
+problem.
+
 ## Exporting to ONNX
 
 ```python
