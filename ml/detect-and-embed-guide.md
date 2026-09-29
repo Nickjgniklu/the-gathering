@@ -67,9 +67,15 @@ future third detector variant is a drop-in as long as it keeps that contract.
 **Checkpoints, where to get them:** `Nickjgniklu/mtg-models`. `repro-a-hardneg-v4` (single-pass
 base, used by both variants above) is `runs/repro-a-hardneg-v4/best.pt`. `tiled-fusion-1920`'s
 `.pt` is the `FusionHead` *only* (~54k params) — it will load fine into `TiledFusionDetector.fusion`
-but is meaningless loaded anywhere else. There is currently no torch `Embedder` checkpoint
-available outside the deployed server (only its ONNX export, `embed.onnx`, exists locally as of
-this writing) — see "The frame-hypothesis gotcha" below for why this matters more than it sounds.
+but is meaningless loaded anywhere else. For `embed_checkpoint`, use
+`runs/recogniser-cfbender-oracle/best.pt` — a real, currently-deployed `Embedder` checkpoint
+recovered from `cfbender/oracle`'s public repo (see that directory's `PROVENANCE.md`: confirmed
+byte-identical to the deployed bundle's own recogniser by sha256, and spot-checked against the
+reference crop pipeline at 0.997+ cosine similarity, not just loaded and trusted blindly). A
+ready-made export using it is already at
+`exports/detect-and-embed-repro-a-hardneg-v4-real-embed/detect_and_embed.onnx` if you just need
+the ONNX file rather than rebuilding it — see "The frame-hypothesis gotcha" below, though, before
+wiring that export's embeddings to the real gallery search.
 
 ## Input contract
 
@@ -160,9 +166,9 @@ for o, t in zip(onnx_out, torch_out):
     print(np.abs(o - t.numpy()).max())  # ~1e-8 (embeddings/scores), ~1e-2 (quad pixel coords)
 ```
 
-File size: ~4MB (single-pass) to ~42MB (tiled-fusion-1920, since it carries 4 tile passes' worth
-of intermediate compute graph plus the fusion head) in early testing with a placeholder embedder;
-re-measure with the real one before treating this as final.
+File size with the real embedder: 8.1MB (single-pass). Not yet re-measured for the tiled-fusion
+variant with the real embedder (early testing with a placeholder embedder put it at ~42MB, since
+it carries 4 tile passes' worth of intermediate compute graph plus the fusion head).
 
 ## Known simplifications (all deliberate, all documented as extension points, not dead ends)
 
