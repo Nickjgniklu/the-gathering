@@ -259,6 +259,122 @@ class RenderTableSceneTest(unittest.TestCase):
         self.assertEqual(len(record["cards"]), 4)  # negatives never become (or displace) a card
 
 
+class RenderTableSceneSequenceTest(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.cards = make_card_bank(self.root, n=12)
+        self.arts = ArtBank([])
+
+    def test_rejects_unknown_setup_camera_profile_or_out_of_range_count(self):
+        with self.assertRaises(ValueError):
+            table_scenes.render_table_scene_sequence(0, self.cards, self.arts, "not-a-setup")
+        with self.assertRaises(ValueError):
+            table_scenes.render_table_scene_sequence(0, self.cards, self.arts, "lanes", camera_profile="not-a-profile")
+        with self.assertRaises(ValueError):
+            table_scenes.render_table_scene_sequence(0, self.cards, self.arts, "lanes", count=len(self.cards) + 1)
+
+    def test_returns_one_image_per_frame(self):
+        images, manifest = table_scenes.render_table_scene_sequence(1, self.cards, self.arts, "lanes", n_frames=6, count=4, size=256, out=128)
+        self.assertEqual(len(images), 6)
+        self.assertEqual(manifest["n_frames"], 6)
+        self.assertEqual(len(manifest["frames"]), 6)
+        for image in images:
+            self.assertEqual(image.shape, (128, 128, 3))
+            self.assertEqual(image.dtype, np.uint8)
+
+    def test_same_seed_is_byte_identical(self):
+        images_a, manifest_a = table_scenes.render_table_scene_sequence(42, self.cards, self.arts, "cluster", n_frames=5, count=4, size=256, out=128)
+        images_b, manifest_b = table_scenes.render_table_scene_sequence(42, self.cards, self.arts, "cluster", n_frames=5, count=4, size=256, out=128)
+        for a, b in zip(images_a, images_b, strict=True):
+            np.testing.assert_array_equal(a, b)
+        self.assertEqual(json.dumps(manifest_a, sort_keys=True), json.dumps(manifest_b, sort_keys=True))
+
+    def test_track_ids_persist_across_frames_when_nothing_moves(self):
+        # Zero every movement-event rate: the same set of track_ids should appear, unchanged,
+        # in every frame -- persistence is the whole point of a `track_id`, not an accident of
+        # low event rates.
+        with (
+            patch.object(table_scenes, "SLIDE_RATE", 0.0),
+            patch.object(table_scenes, "OCCLUDE_RATE", 0.0),
+            patch.object(table_scenes, "ENTER_RATE", 0.0),
+            patch.object(table_scenes, "LEAVE_RATE", 0.0),
+        ):
+            _, manifest = table_scenes.render_table_scene_sequence(3, self.cards, self.arts, "lanes", n_frames=8, count=5, size=512, out=256)
+        first_ids = sorted(c["track_id"] for c in manifest["frames"][0]["cards"])
+        self.assertGreater(len(first_ids), 0)
+        for frame in manifest["frames"][1:]:
+            self.assertEqual(sorted(c["track_id"] for c in frame["cards"]), first_ids)
+
+    def test_leave_retires_a_track_id_permanently(self):
+        # A moderate (not certain-on-frame-0) rate across several seeds: the invariant that
+        # matters is "never reappears", checked every frame; "someone eventually leaves" is
+        # checked in aggregate across seeds rather than forced deterministically, since a rate of
+        # 1.0 would retire every card before frame 0 is even drawn (events run before drawing on
+        # every frame, including the first).
+        any_decrease = False
+        with (
+            patch.object(table_scenes, "LEAVE_RATE", 0.3),
+            patch.object(table_scenes, "SLIDE_RATE", 0.0),
+            patch.object(table_scenes, "OCCLUDE_RATE", 0.0),
+            patch.object(table_scenes, "ENTER_RATE", 0.0),
+        ):
+            for seed in range(10):
+                _, manifest = table_scenes.render_table_scene_sequence(seed, self.cards, self.arts, "lanes", n_frames=6, count=4, size=512, out=256)
+                seen_per_frame = [{c["track_id"] for c in frame["cards"]} for frame in manifest["frames"]]
+                for earlier, later in zip(seen_per_frame, seen_per_frame[1:]):
+                    self.assertTrue(later <= earlier)  # a track_id never comes back once it's gone
+                if len(seen_per_frame[-1]) < len(seen_per_frame[0]):
+                    any_decrease = True
+        self.assertTrue(any_decrease)
+
+    def test_enter_adds_new_track_ids_without_reusing_a_retired_one(self):
+        with patch.object(table_scenes, "ENTER_RATE", 1.0), patch.object(table_scenes, "LEAVE_RATE", 0.0):
+            _, manifest = table_scenes.render_table_scene_sequence(5, self.cards, self.arts, "lanes", n_frames=6, count=2, size=1280, out=256)
+        seen_per_frame = [{c["track_id"] for c in frame["cards"]} for frame in manifest["frames"]]
+        self.assertGreater(len(seen_per_frame[-1]), len(seen_per_frame[0]))  # new tracks did appear
+        for earlier, later in zip(seen_per_frame, seen_per_frame[1:]):
+            self.assertTrue(earlier <= later)  # nothing disappears (LEAVE_RATE=0) and nothing is renumbered
+
+    def test_occlusion_event_produces_a_genuinely_bad_frame(self):
+        with patch.object(table_scenes, "OCCLUDE_RATE", 1.0), patch.object(table_scenes, "LEAVE_RATE", 0.0):
+            _, manifest = table_scenes.render_table_scene_sequence(6, self.cards, self.arts, "lanes", n_frames=4, count=3, size=1280, out=256)
+        occluded_any = any(c["occluded_fraction"] > 0.5 and not c["identifiable"] for frame in manifest["frames"] for c in frame["cards"])
+        self.assertTrue(occluded_any)
+
+    def test_clutter_is_a_single_sequence_level_list_not_per_frame(self):
+        _, manifest = table_scenes.render_table_scene_sequence(
+            2, self.cards, self.arts, "lanes", n_frames=4, count=3, size=1280, out=256, clutter_rate=1.0, round_negative_rate=1.0
+        )
+        kinds = {n["kind"] for n in manifest["negatives"]}
+        self.assertEqual(kinds, {"clutter", "round_object"})
+        self.assertNotIn("negatives", manifest["frames"][0])  # negatives live at the sequence level, not per frame
+
+
+class WriteSequenceDatasetTest(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.cards = make_card_bank(self.root / "bank", n=12)
+        self.out = self.root / "out"
+
+    def test_writes_every_split_with_frame_files_on_disk(self):
+        with patch.object(table_scenes, "CardBank", return_value=self.cards), patch.object(table_scenes, "list_arts", return_value=[]):
+            header = table_scenes.write_sequence_dataset(self.out, seed=11, sequences={"train": 2, "val": 1}, n_frames=3, size=256, out=128)
+        self.assertEqual(header["renderer_version"], table_scenes.SEQUENCE_RENDERER_VERSION)
+        for split, count in (("train", 2), ("val", 1)):
+            self.assertEqual(header["splits"][split]["sequences"], count)
+            rows = (self.out / split / "manifest.jsonl").read_text().splitlines()
+            self.assertEqual(len(rows), count)
+            for line in rows:
+                row = json.loads(line)
+                self.assertEqual(len(row["frame_files"]), 3)
+                for name in row["frame_files"]:
+                    self.assertTrue((self.out / split / row["sequence"] / name).exists())
+
+
 class WriteDatasetTest(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()

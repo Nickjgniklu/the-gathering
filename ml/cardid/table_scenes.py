@@ -343,6 +343,346 @@ def _scene_seed(seed: int, split: str, ordinal: int) -> int:
     return int(np.random.SeedSequence([seed, SPLIT_INDEX[split], ordinal]).generate_state(1)[0])
 
 
+# -- Sequence rendering (feat/track-memory): N-frame sequences for TrackMemory's training, where a
+# card's identity/layout mostly persists across frames instead of being redrawn independently each
+# time. Generalizes `render_table_scene_pair` (bgsub branch, N=2, fixed geometry, only independent
+# per-frame `photometrics()`) to N frames with real per-frame geometric change: jitter, slides,
+# hand occlusion, and cards entering/leaving. See `track_memory.py`'s module docstring for why.
+
+SEQUENCE_RENDERER_VERSION = "table-sequences-v1"
+
+SLIDE_RATE = 0.02  # per alive card, per frame: chance to start sliding to a new spot
+SLIDE_FRAMES = (4, 8)  # frames a slide takes to complete, inclusive
+OCCLUDE_RATE = 0.03  # per alive card, per frame: chance a hand/object starts covering it
+OCCLUDE_FRAMES = (2, 5)  # frames an occlusion event lasts
+ENTER_RATE = 0.04  # per frame: chance a new card is played onto the table
+LEAVE_RATE = 0.015  # per alive, non-sliding, non-occluded card, per frame: chance it's picked up
+POSE_JITTER_PX_FRAC = 0.01  # per-frame position jitter, as a fraction of the card's `short` side
+POSE_JITTER_DEG = 2.0  # per-frame angle jitter in degrees -- camera shake / hand micro-adjustments
+LIGHTING_DRIFT = 0.04  # per-frame extra lighting-ramp delta, on top of the sequence's base lighting
+MAX_SEQUENCE_TRACKS = 20  # hard cap on ever-alive tracks in one sequence, matches detect_and_embed.MAX_CARDS
+
+# A spread of skin tones for the hand/object occluder -- not photoreal, just enough coverage for
+# the occlusion-fraction bookkeeping and a genuinely bad frame for TrackMemory to learn to ride out.
+_HAND_TONES = np.float32([[196, 164, 132], [141, 100, 73], [92, 63, 45], [222, 196, 170]])
+
+
+@dataclass(frozen=True)
+class SequenceCard(TableCard):
+    """A `TableCard` plus the one field a single scene never needed: `track_id`, stable for as
+    long as this physical card stays on the table across the sequence's frames."""
+
+    track_id: int
+
+
+@dataclass
+class _Track:
+    """One physical card's mutable state while a sequence is being generated -- not part of any
+    manifest; `render_table_scene_sequence` reduces this to a `SequenceCard` per frame it's drawn
+    in. `short` is fixed for the whole sequence (a real card doesn't resize itself); `cx/cy/angle`
+    evolve frame to frame via jitter and, when a slide is in progress, linear interpolation toward
+    `slide_target`."""
+
+    track_id: int
+    card_index: int
+    cx: float
+    cy: float
+    short: float
+    angle: float
+    alive: bool = True
+    slide_target: tuple[float, float] | None = None
+    slide_frames_left: int = 0
+    occlude_frames_left: int = 0
+
+
+def _free_spot(rng: np.random.Generator, tracks: list[_Track], short: float, lo: float, hi: float, exclude: _Track | None = None) -> tuple[float, float] | None:
+    """A random point at least one footprint away from every other alive track, or `None` after
+    a handful of failed tries (a crowded table has nowhere left to slide/enter this frame -- the
+    caller skips the event rather than forcing an overlap)."""
+    footprint = short * CARD_ASPECT * FOOTPRINT_MARGIN
+    for _ in range(12):
+        x, y = rng.uniform(lo, hi), rng.uniform(lo, hi)
+        if all(np.hypot(x - t.cx, y - t.cy) >= footprint for t in tracks if t.alive and t is not exclude):
+            return float(x), float(y)
+    return None
+
+
+def _lighting_drift(canvas: np.ndarray, rng: np.random.Generator, size: int, magnitude: float) -> None:
+    """A small extra per-frame lighting ramp on top of the sequence's base lighting (already
+    baked into `canvas` by `background()`), mimicking auto-exposure/white-balance hunting on a
+    real webcam frame to frame. Same mechanism as `background()`'s own ramp, smaller magnitude,
+    drawn from the sequence's one continuing `rng` stream -- the same independence trick
+    `render_table_scene_pair` uses for its two frames' independent `photometrics()` draws."""
+    ramp = (np.arange(size, dtype=np.float32) / size - 0.5) * 2
+    gx, gy = rng.uniform(-magnitude, magnitude, size=2).astype(np.float32)
+    light = 1 + gx * ramp[None, :] + gy * ramp[:, None]
+    cv2.multiply(canvas, cv2.merge([light, light, light]), dst=canvas)
+
+
+def _draw_hand_occluder(canvas: np.ndarray, rng: np.random.Generator, quad: np.ndarray) -> np.ndarray:
+    """Paints a large soft-edged blob over most of `quad`, standing in for a hand or object
+    passing over the card for a few frames. Returns its own alpha mask so the caller can fold it
+    into that card's occluded-fraction bookkeeping the same way a later-drawn card already is."""
+    center = quad.mean(axis=0)
+    coverage = rng.uniform(0.55, 0.85)
+    shift = rng.uniform(-0.15, 0.15, size=2) * np.linalg.norm(quad[1] - quad[0])
+    blob = (quad - center) * coverage + center + shift
+    mask = np.zeros(canvas.shape[:2], dtype=np.uint8)
+    cv2.fillConvexPoly(mask, blob.astype(np.int32), 255)
+    mask = cv2.GaussianBlur(mask, (0, 0), max(1.0, coverage * 6))
+    alpha = (mask.astype(np.float32) / 255.0)[..., None]
+    tone = _HAND_TONES[int(rng.integers(len(_HAND_TONES)))] * rng.uniform(0.85, 1.15)
+    canvas[:] = canvas * (1 - alpha) + tone * alpha
+    return mask
+
+
+def render_table_scene_sequence(
+    seed: int,
+    cards: CardBank,
+    arts: ArtBank,
+    setup: str,
+    camera_profile: str = "overhead_1080p",
+    n_frames: int = 10,
+    count: int = 8,
+    size: int = 1280,
+    out: int = 640,
+    severity: float = 1.0,
+    clutter_rate: float = CLUTTER_RATE,
+    round_negative_rate: float = ROUND_NEGATIVE_RATE,
+    real_clutter_rate: float = REAL_CLUTTER_RATE,
+) -> tuple[list[np.ndarray], dict]:
+    """Render `n_frames` of one seeded table, where cards mostly persist across frames instead of
+    being redrawn independently each time -- for TrackMemory's training (see `track_memory.py`).
+
+    One `rng` drives the whole sequence, advanced sequentially frame by frame (same mechanism as
+    `render_table_scene_pair`'s independent per-frame photometrics). Background and clutter are
+    drawn once, before any frame diverges, so clutter position is fixed for the whole sequence,
+    same as that function's shared `bg_canvas`. Cards carry a persistent `track_id`, pose, and
+    liveness across frames, mutated by four movement events (slide, hand occlusion, enter, leave)
+    plus per-frame micro-jitter, before each frame is composited and photometrics'd independently.
+    """
+    if setup not in SETUPS:
+        raise ValueError(f"unknown setup {setup!r}; choose from {SETUPS}")
+    if camera_profile not in CAMERA_PROFILES:
+        raise ValueError(f"unknown camera profile {camera_profile!r}; choose from {tuple(CAMERA_PROFILES)}")
+    if not 0 <= count <= len(cards):
+        raise ValueError(f"count must be between 0 and the number of supplied cards ({len(cards)})")
+    rng = np.random.default_rng(seed)
+    profile = CAMERA_PROFILES[camera_profile]
+    scale = out / size
+    sev = profile["severity"] * severity
+
+    base_canvas = background(rng, arts, size)
+    negatives = []
+    if clutter_rate > 0 and rng.random() < clutter_rate:
+        for _ in range(int(rng.integers(1, 3))):
+            center, radius = rng.uniform(0, size, size=2), size * rng.uniform(0.05, 0.14)
+            clutter_object(base_canvas, rng, center, radius)
+            negatives.append({"kind": "clutter", "bbox": [*(center - radius * 1.2), *(center + radius * 1.2)]})
+    if round_negative_rate > 0 and rng.random() < round_negative_rate:
+        center, radius = rng.uniform(0, size, size=2), size * rng.uniform(0.03, 0.08)
+        round_object(base_canvas, rng, center, radius)
+        negatives.append({"kind": "round_object", "bbox": [*(center - radius), *(center + radius)]})
+    if real_clutter_rate > 0 and rng.random() < real_clutter_rate:
+        for _ in range(int(rng.integers(1, 3))):
+            center, long_side = rng.uniform(0, size, size=2), size * rng.uniform(0.08, 0.2)
+            real_clutter_object(base_canvas, rng, center, long_side)
+            negatives.append({"kind": "real_clutter", "bbox": [*(center - long_side * 0.7), *(center + long_side * 0.7)]})
+
+    poses = _poses(rng, setup, count, size, profile)
+    placed = len(poses)
+    seq_short = poses[0][2] if placed else size * float(np.mean(profile["short_frac"]))
+    indices = rng.choice(len(cards), placed, replace=False) if placed else np.empty(0, dtype=int)
+    used_indices = {int(i) for i in indices}
+    next_track_id = 0
+    tracks: list[_Track] = []
+    for (x, y, short, angle), card_index in zip(poses, indices, strict=True):
+        tracks.append(_Track(track_id=next_track_id, card_index=int(card_index), cx=x, cy=y, short=short, angle=float(angle)))
+        next_track_id += 1
+
+    margin = 0.08 * size
+    lo, hi = margin, size - margin
+
+    frames_out: list[np.ndarray] = []
+    frame_manifests: list[dict] = []
+    for _frame_idx in range(n_frames):
+        alive = [t for t in tracks if t.alive]
+
+        for t in alive:  # slides: advance in-progress ones, maybe start new ones
+            if t.slide_frames_left > 0:
+                tx, ty = t.slide_target  # type: ignore[misc]
+                frac = 1.0 / t.slide_frames_left
+                t.cx += (tx - t.cx) * frac
+                t.cy += (ty - t.cy) * frac
+                t.slide_frames_left -= 1
+                if t.slide_frames_left == 0:
+                    t.cx, t.cy, t.slide_target = tx, ty, None
+            elif rng.random() < SLIDE_RATE:
+                spot = _free_spot(rng, tracks, t.short, lo, hi, exclude=t)
+                if spot is not None:
+                    t.slide_target, t.slide_frames_left = spot, int(rng.integers(*SLIDE_FRAMES))
+
+        for t in alive:  # occlusion: tick down active ones, maybe start a new one
+            if t.occlude_frames_left > 0:
+                t.occlude_frames_left -= 1
+            elif rng.random() < OCCLUDE_RATE:
+                t.occlude_frames_left = int(rng.integers(*OCCLUDE_FRAMES))
+
+        for t in alive:  # leave: only a currently-undisturbed card is picked up
+            if t.slide_target is None and t.occlude_frames_left == 0 and rng.random() < LEAVE_RATE:
+                t.alive = False
+
+        alive = [t for t in tracks if t.alive]
+        if len(alive) < MAX_SEQUENCE_TRACKS and len(used_indices) < len(cards) and rng.random() < ENTER_RATE:
+            spot = _free_spot(rng, tracks, seq_short, lo, hi)
+            if spot is not None:
+                new_index = int(rng.choice([i for i in range(len(cards)) if i not in used_indices]))
+                used_indices.add(new_index)
+                tracks.append(_Track(track_id=next_track_id, card_index=new_index, cx=spot[0], cy=spot[1], short=seq_short, angle=float(rng.choice((0, 90, 180, 270)))))
+                next_track_id += 1
+                alive.append(tracks[-1])
+
+        for t in alive:  # per-frame micro-jitter: camera shake / hand micro-adjustments
+            t.cx += rng.normal(0, POSE_JITTER_PX_FRAC * t.short)
+            t.cy += rng.normal(0, POSE_JITTER_PX_FRAC * t.short)
+            t.angle += rng.uniform(-POSE_JITTER_DEG, POSE_JITTER_DEG)
+
+        canvas = base_canvas.copy()
+        _lighting_drift(canvas, rng, size, LIGHTING_DRIFT)
+
+        quads = [quad_from_pose(t.cx, t.cy, t.short, t.angle + rng.uniform(-8, 8), rng) for t in alive]
+        card_masks, occluder_masks = [], []
+        for t, quad in zip(alive, quads, strict=True):
+            card_alpha = draw_card(canvas, rng, cards, quad, detail=scale, index=t.card_index)
+            card_masks.append(card_alpha > 0.5)
+            if t.occlude_frames_left > 0:
+                occ_alpha = _draw_hand_occluder(canvas, rng, quad)
+                occluder_masks.append(occ_alpha > 0.5)
+            else:
+                occluder_masks.append(np.zeros_like(card_alpha, dtype=bool))
+
+        records = []
+        for i, (t, quad, mask) in enumerate(zip(alive, quads, card_masks, strict=True)):
+            later = np.logical_or.reduce(card_masks[i + 1 :]) if i + 1 < len(alive) else np.zeros_like(mask)
+            covering = later | occluder_masks[i]
+            occluded = float((mask & covering).sum() / max(mask.sum(), 1))
+            out_quad = quad * scale
+            short_px = quad_short(out_quad)
+            records.append(
+                SequenceCard(
+                    card_id=cards.paths[t.card_index].stem,
+                    quad=out_quad.tolist(),
+                    bbox=list(quad_bbox(out_quad)),
+                    orientation=int(round(np.degrees(np.arctan2(out_quad[1, 1] - out_quad[0, 1], out_quad[1, 0] - out_quad[0, 0]))) % 360),
+                    occluded_fraction=occluded,
+                    identifiable=occluded < IDENTIFIABLE_MAX_OCCLUSION and short_px >= IDENTIFIABLE_MIN_SHORT_PX,
+                    track_id=t.track_id,
+                )
+            )
+
+        image = photometrics(cv2.resize(np.clip(canvas, 0, 255).astype(np.uint8), (out, out), interpolation=cv2.INTER_AREA), rng, scale, severity=sev)
+        frames_out.append(image)
+        frame_manifests.append({"cards": [asdict(r) for r in records]})
+
+    return frames_out, {
+        "seed": seed,
+        "setup": setup,
+        "camera_profile": camera_profile,
+        "n_frames": n_frames,
+        "width": out,
+        "height": out,
+        "negatives": [{"kind": n["kind"], "bbox": [v * scale for v in n["bbox"]]} for n in negatives],
+        "frames": frame_manifests,
+    }
+
+
+def write_sequence_split(
+    output: Path,
+    split: str,
+    sequences: int,
+    n_frames: int,
+    seed: int,
+    cards: CardBank,
+    arts_by_pool: dict[str, ArtBank],
+    size: int = 1280,
+    out: int = 640,
+) -> dict:
+    """Write one split's sequences under ``output/<split>/<ordinal>/frame_NNN.jpg``, mirroring
+    `write_split`'s per-scene layout and seed convention (sequences and single-frame scenes use
+    independent ordinal namespaces if both are ever generated under the same `output`/`split`)."""
+    if split not in SPLIT_SETUPS:
+        raise ValueError(f"unknown split {split!r}; choose from {SPLITS}")
+    setups, profiles = SPLIT_SETUPS[split], SPLIT_CAMERA_PROFILES[split]
+    severity = SPLIT_SEVERITY[split]
+    weights = SPLIT_DENSITY_WEIGHTS[split]
+    arts = arts_by_pool[SPLIT_BACKGROUND_POOL[split]]
+    density_names = list(weights)
+    density_probs = np.array([weights[d] for d in density_names], dtype=np.float64)
+    density_probs /= density_probs.sum()
+    split_dir = output / split
+    split_dir.mkdir(parents=True, exist_ok=True)
+    stats = {"sequences": 0, "frames": 0}
+    with (split_dir / "manifest.jsonl").open("w", encoding="utf-8") as file:
+        for ordinal in range(sequences):
+            seq_seed = _scene_seed(seed, split, ordinal)
+            picker = np.random.default_rng(seq_seed)
+            setup = setups[ordinal % len(setups)]
+            camera_profile = profiles[ordinal % len(profiles)]
+            density = str(picker.choice(density_names, p=density_probs))
+            dlo, dhi = DENSITIES[density]
+            count = min(int(picker.integers(dlo, dhi + 1)), len(cards))
+            images, manifest = render_table_scene_sequence(seq_seed, cards, arts, setup, camera_profile, n_frames, count, size, out, severity)
+            seq_dir = split_dir / f"{ordinal:06d}"
+            seq_dir.mkdir(parents=True, exist_ok=True)
+            frame_files = []
+            for k, image in enumerate(images):
+                name = f"frame_{k:03d}.jpg"
+                ok, encoded = cv2.imencode(".jpg", cv2.cvtColor(image, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 92])
+                if not ok:
+                    raise RuntimeError(f"failed to encode sequence {ordinal} frame {k} for split {split!r}")
+                (seq_dir / name).write_bytes(encoded.tobytes())
+                frame_files.append(name)
+            row = {**manifest, "sequence": f"{ordinal:06d}", "frame_files": frame_files, "split": split, "density": density}
+            file.write(json.dumps(row) + "\n")
+            stats["sequences"] += 1
+            stats["frames"] += len(images)
+    return stats
+
+
+def write_sequence_dataset(output: Path, seed: int, sequences: dict[str, int], n_frames: int = 10, size: int = 1280, out: int = 640) -> dict:
+    """Write every requested split's sequences plus a ``dataset.json`` header, mirroring
+    `write_dataset`'s shape exactly (renderer version, catalog fingerprint, split rules, stats)."""
+    cards = CardBank()
+    pools = partition_arts(list_arts(), seed)
+    arts_by_pool = {name: ArtBank(paths=paths) for name, paths in pools.items()}
+    output.mkdir(parents=True, exist_ok=True)
+    header_path = output / "dataset.json"
+    previous = json.loads(header_path.read_text()) if header_path.exists() else {}
+    split_rules, split_stats = previous.get("split_rules", {}), previous.get("splits", {})
+    for split, count in sequences.items():
+        split_stats[split] = write_sequence_split(output, split, count, n_frames, seed, cards, arts_by_pool, size, out)
+        split_rules[split] = {
+            "setups": SPLIT_SETUPS[split],
+            "camera_profiles": SPLIT_CAMERA_PROFILES[split],
+            "background_pool": SPLIT_BACKGROUND_POOL[split],
+            "severity": SPLIT_SEVERITY[split],
+            "density_weights": SPLIT_DENSITY_WEIGHTS[split],
+            "n_frames": n_frames,
+        }
+    header = {
+        "renderer_version": SEQUENCE_RENDERER_VERSION,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "seed": seed,
+        "catalog_fingerprint": catalog_fingerprint(cards),
+        "cards_available": len(cards),
+        "background_pool_sizes": {name: len(paths) for name, paths in pools.items()},
+        "split_rules": split_rules,
+        "splits": split_stats,
+    }
+    header_path.write_text(json.dumps(header, indent=2))
+    return header
+
+
 def write_split(output: Path, split: str, scenes: int, seed: int, cards: CardBank, arts_by_pool: dict[str, ArtBank], size: int = 1280, out: int = 640) -> dict:
     """Write one split's JPEGs and JSONL manifest under ``output/<split>/``."""
     if split not in SPLIT_SETUPS:
@@ -436,11 +776,18 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=20260926)
     parser.add_argument("--size", type=int, default=1280, help="native render resolution before downscale")
     parser.add_argument("--resolution", type=int, default=640, help="output image resolution")
+    parser.add_argument(
+        "--sequences", action="store_true", help="write N-frame sequences (for TrackMemory training) instead of independent scenes"
+    )
+    parser.add_argument("--frames", type=int, default=10, help="--sequences only: frames per sequence")
     args = parser.parse_args()
-    scenes = {"train": args.train, "val": args.val, "test": args.test, "challenge": args.challenge}
+    counts = {"train": args.train, "val": args.val, "test": args.test, "challenge": args.challenge}
     if args.split != "all":
-        scenes = {args.split: scenes[args.split]}
-    header = write_dataset(args.out, args.seed, scenes, args.size, args.resolution)
+        counts = {args.split: counts[args.split]}
+    if args.sequences:
+        header = write_sequence_dataset(args.out, args.seed, counts, args.frames, args.size, args.resolution)
+    else:
+        header = write_dataset(args.out, args.seed, counts, args.size, args.resolution)
     print(json.dumps({k: v for k, v in header.items() if k != "split_rules"}, indent=2))
     print(f"-> {args.out}")
 
