@@ -70,19 +70,9 @@ def _topk_peaks(heat_logits: torch.Tensor, pose: torch.Tensor, up: torch.Tensor,
     b, _, s, _ = heat_logits.shape
     prob = torch.sigmoid(heat_logits)
     pooled = F.max_pool2d(prob, 3, stride=1, padding=1)
-    peak_scores = torch.where(prob == pooled, prob, prob * 0).view(b, -1)  # `prob*0` instead of
-    # `torch.zeros_like(prob)`: the latter's shape is derived from `prob` at trace time, which
-    # PyTorch's ONNX exporter lowers to Shape+ConstantOfShape (not in onnxruntime-web's WebGPU
-    # operator table) instead of folding it away; `prob*0` traces to a plain Mul, which is.
+    peak_scores = torch.where(prob == pooled, prob, torch.zeros_like(prob)).view(b, -1)
     scores, idx = torch.topk(peak_scores, k, dim=1)
-    # `idx` and `s` are always non-negative (a flat index into a positive-size grid), but
-    # `torch.div(..., rounding_mode="floor")` and `%` don't know that: PyTorch's ONNX exporter
-    # defensively lowers *both* to full signed-integer correction logic (Mod/Xor/And/Not nodes),
-    # none of which are in onnxruntime-web's WebGPU operator table, forcing a CPU/WASM fallback
-    # for an always-false branch. Plain float division + floor + subtraction needs none of that.
-    idx_f = idx.float()
-    y = (idx_f / s).floor()
-    x = idx_f - y * s
+    y, x = torch.div(idx, s, rounding_mode="floor").float(), (idx % s).float()
     cx, cy = (x + 0.5) * stride, (y + 0.5) * stride
     idx_pose = idx.unsqueeze(1).expand(-1, 3, -1)
     idx_up = idx.unsqueeze(1).expand(-1, 2, -1)
