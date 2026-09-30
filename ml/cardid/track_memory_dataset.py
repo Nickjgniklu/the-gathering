@@ -145,7 +145,10 @@ class TrackMemorySequenceDataset(Dataset):
                 for c in frame["cards"]:
                     card_id_by_track.setdefault(c["track_id"], c["card_id"])
             for track_id, card_id in card_id_by_track.items():
-                gallery_index = id_to_index.get(card_id)
+                # A local card image's stem can carry a "-1" suffix (an alternate face/printing
+                # of the same oracle id) that arts.json's own ids never do -- same convention
+                # regen_gallery_verified.py already strips when checking gallery membership.
+                gallery_index = id_to_index.get(card_id.removesuffix("-1"))
                 if gallery_index is None:
                     skipped += 1
                     continue
