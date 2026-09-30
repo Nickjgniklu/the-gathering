@@ -1,5 +1,6 @@
-"""DESIGN DOCUMENT, NOT YET IMPLEMENTED. Stubs below sketch the intended shape so a future
-session can pick this up without re-deriving the design; nothing here runs yet.
+"""Both stages below are implemented (feat/track-memory); `TrackMemory` itself is untrained --
+see `track_memory_dataset.py` for how sequences become per-track training examples and
+`train_track_memory.py` for the training loop.
 
 Goal: stabilize `detect_and_embed.py`'s per-frame output across a live video stream. Today every
 frame is scored independently, so a card's embedding is a noisy one-shot sample (motion blur,
@@ -66,17 +67,16 @@ new category of complexity) -- but if training data or stability problems make t
 get working, the fixed-window variant is the direct fallback and needs no architectural rethink,
 just a different Stage 2 module with the same inputs/outputs.
 
-## What this needs that doesn't exist yet
+## What this needed that didn't exist yet (now built)
 
-Training needs *sequences*, not independent scenes -- `table_scenes.py` only renders one-off
-frames today. The nearest existing building block is `render_table_scene_pair` (parked on
-`feat/background-subtraction-detector`), which renders two frames sharing a scene with
-independent photometric drift. The natural extension is a `render_table_scene_sequence(n_frames)`
-that keeps card identity and layout fixed across N frames while independently perturbing each
-frame's camera jitter, lighting, and card angle by a small amount -- enough to reproduce the
-same-card-different-embedding-per-frame noise this module exists to smooth over, without
-simulating real physics. This is the one genuinely missing prerequisite; everything else
-(the frozen tile detector, the embedder, the crop layer) already exists and works.
+Training needs *sequences*, not independent scenes -- `table_scenes.py` used to only render
+one-off frames. `table_scenes.render_table_scene_sequence(n_frames)` (feat/track-memory) is the
+built extension: it keeps a persistent `track_id`/pose/liveness per card across N frames, mutated
+by real movement events (slide, hand occlusion, card enter/leave) plus per-frame jitter, on top of
+`render_table_scene_pair`'s pattern (one `rng` advanced sequentially, independent per-frame
+`photometrics()` draws). `detect_and_embed.DetectAndEmbed.forward(images, return_pose=True)` is
+the other piece that needed adding: it now also returns `pose (N,MAX_CARDS,5)` (the raw `(cx, cy,
+short, angle)` it already computed internally before building `quads`), which is `pose_t` below.
 
 Loss sketch: across a rendered sequence, `refined_embedding` should match the true card's
 canonical gallery embedding more often / more confidently than the raw per-frame embedding does
@@ -88,11 +88,12 @@ ground-truth quads without lagging behind genuine motion.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 import torch
 from torch import nn
+from torch.nn import functional as F
 
 MAX_CARDS = 20  # matches detect_and_embed.MAX_CARDS
 GATE_DISTANCE = 40.0  # placeholder: roughly half a card-width at the resolution tracks operate in
@@ -114,11 +115,32 @@ class Track:
 
 def associate_detections(tracks: list[Track], detection_centers: np.ndarray, gate: float = GATE_DISTANCE) -> tuple[dict[int, int], list[int]]:
     """Match this frame's `detection_centers` (K, 2) against `tracks` by nearest position.
-    Returns (matched: {detection_index: track_index}, unmatched_detection_indices). Greedy
-    nearest-neighbour is enough here (typical frame-to-frame card displacement is small relative
-    to card spacing); switch to a proper assignment solver only if greedy proves to misassign in
-    practice. NOT YET IMPLEMENTED -- see module docstring's Stage 1 example."""
-    raise NotImplementedError("design stub -- see module docstring")
+    Returns (matched: {detection_index: track_index}, unmatched_detection_indices).
+
+    Globally-greedy, not per-detection-greedy: every (detection, track) pair within `gate` is
+    considered in ascending distance order, and the closest pair is claimed first, each claiming
+    exactly one of the other -- this is what correctly resolves the module docstring's rank-swap
+    example (whichever detection is *closest* to a track wins it, not whichever is processed
+    first), while staying a cheap discrete correspondence problem, not a learned one. A proper
+    Hungarian assignment would be optimal rather than greedy-optimal; switch to one only if this
+    proves to misassign in practice -- at `MAX_CARDS`-scale (a few dozen detections/tracks) the
+    two rarely disagree and greedy is simpler to reason about."""
+    matched: dict[int, int] = {}
+    if len(tracks) == 0 or len(detection_centers) == 0:
+        return matched, list(range(len(detection_centers)))
+    track_centers = np.stack([t.last_center for t in tracks])
+    dists = np.linalg.norm(detection_centers[:, None, :] - track_centers[None, :, :], axis=-1)
+    pairs = sorted(((dists[d, t], d, t) for d in range(len(detection_centers)) for t in range(len(tracks))), key=lambda p: p[0])
+    used_tracks: set[int] = set()
+    for dist, d, t in pairs:
+        if dist > gate:
+            break  # sorted ascending: every remaining pair is also out of gate
+        if d in matched or t in used_tracks:
+            continue
+        matched[d] = t
+        used_tracks.add(t)
+    unmatched = [d for d in range(len(detection_centers)) if d not in matched]
+    return matched, unmatched
 
 
 class TrackMemory(nn.Module):
@@ -135,5 +157,8 @@ class TrackMemory(nn.Module):
 
     def forward(self, hidden: torch.Tensor, embedding_t: torch.Tensor, pose_t: torch.Tensor, score_t: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """(hidden, embedding_t (B,128), pose_t (B,5), score_t (B,1)) -> (new_hidden,
-        refined_embedding (B,128) L2-normalised, refined_pose (B,5)). NOT YET IMPLEMENTED."""
-        raise NotImplementedError("design stub -- see module docstring")
+        refined_embedding (B,128) L2-normalised, refined_pose (B,5))."""
+        new_hidden = self.cell(torch.cat([embedding_t, pose_t, score_t], dim=-1), hidden)
+        refined_embedding = F.normalize(self.to_embedding(new_hidden), dim=-1)
+        refined_pose = pose_t + self.to_pose_residual(new_hidden)
+        return new_hidden, refined_embedding, refined_pose
