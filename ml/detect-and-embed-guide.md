@@ -206,6 +206,42 @@ but did not meaningfully change CPU, which was already compute- rather than kern
 **At ~142ms/frame even on GPU, this is not yet real-time-per-frame** (roughly 7fps) -- worth
 knowing before assuming the frame-hypothesis fix is free.
 
+## WebGPU compatibility: measured in a real browser, not inferred from a doc table
+
+Don't "fix" this graph against onnxruntime-web's documented WebGPU operator support table without
+re-measuring end to end. That was tried once: source-level changes to remove `Mod`/`Xor`/`And`/`Not`
+from `_topk_peaks` (an artifact of PyTorch's ONNX exporter defensively handling a floor-division it
+couldn't prove was always non-negative) plus a post-export `ORT_ENABLE_EXTENDED` optimization pass
+to clean up leftover `ConstantOfShape` nodes. On paper this looked strictly better: fewer
+undocumented ops, fewer CPU-assigned nodes. Measured on a real Chromium/Dawn browser on real
+hardware (AMD 7900 GRE, via a Playwright benchmark), it was **2.7x slower** (94.7ms -> 253.2ms
+median per-frame) than the original, unmodified graph. Both commits were reverted.
+
+The cause, found via onnxruntime's own verbose per-node placement log (`ort.env.logLevel =
+"verbose"` before `InferenceSession.create`, then reading the `VerifyEachNodeIsAssignedToAnEp`
+"Node placements" block from the console) rather than any static op table: `ORT_ENABLE_EXTENDED`
+fuses the top-level gallery-search matmul's `Transpose` into it as `FusedMatMul`
+(`MatMulTransposeFusion`, an extended-level-only optimizer pass). `FusedMatMul` has no WebGPU kernel
+in onnxruntime-web, so the single largest op in the entire graph -- the 51417x128 gallery matched
+against up to 280 query columns -- silently fell back to single-threaded CPU/wasm. That one op
+accounted for essentially the whole regression. Meanwhile the *original* graph's CPU-assigned nodes
+(`Div`, `Mod`, `Xor`, `Cast`, `Expand`, 13 total, all tiny shape/index ops) are cheap and, per
+onnxruntime's own log, entirely intentional: "ORT explicitly assigns shape related ops to CPU to
+improve perf." Removing that fallback bought nothing; the optimization pass meant to help
+introduced a far more expensive one in its place.
+
+**The lesson, not just the specific bug**: a WebGPU op-support table only tells you whether an op
+*already in the graph* has a GPU kernel. It says nothing about whether a graph optimizer -- ORT's
+own `ORT_ENABLE_EXTENDED`, or onnxruntime-web's runtime `graphOptimizationLevel: "all"` -- will
+*introduce a new, fused, unsupported op* on top of an otherwise-fine graph. Static op-list auditing
+cannot catch this; only running the actual export through the actual runtime and execution provider
+and reading its own node-placement log can. Re-run that check after any export-side optimization
+change, not just once per source-code change -- the optimizer's behavior on the specific graph shape
+is what determines placement, not the op list alone. `TopK` and `GridSample` were both flagged as
+uncertain from documentation alone during the original (over-)fix; in practice neither caused a
+problem -- the actual problem was an op that wasn't even in the graph until an optimization pass put
+it there.
+
 ## Known simplifications (all deliberate, all documented as extension points, not dead ends)
 
 - **Fixed top-20 detections, not a threshold** — see above; caller must threshold `scores`.
