@@ -76,7 +76,7 @@ def track_memory_loss(
     flat_true_poses = true_poses.reshape(b * t, -1)[flat_valid]
     pose_loss = F.l1_loss(flat_poses, flat_true_poses)
 
-    return embed_loss + pose_weight * pose_loss, {"embed": float(embed_loss), "pose": float(pose_loss)}
+    return embed_loss + pose_weight * pose_loss, {"embed": embed_loss.detach().item(), "pose": pose_loss.detach().item()}
 
 
 @torch.no_grad()
@@ -192,7 +192,7 @@ def main() -> None:
             loss.backward()
             opt.step()
             sched.step()
-            losses.append(float(loss))
+            losses.append(loss.detach().item())
             for k, v in parts.items():
                 parts_sum[k] += v
         metrics = evaluate_val(model, val_set, device, gallery, args.val_limit)
