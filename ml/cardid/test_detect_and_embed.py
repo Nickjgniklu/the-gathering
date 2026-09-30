@@ -9,12 +9,16 @@ comparisons pass, without needing a real checkpoint or a full scene render."""
 from __future__ import annotations
 
 import math
+import tempfile
 import unittest
+from pathlib import Path
 
 import torch
 
 from .detect import FRAME_NAMES
-from .detect_and_embed import N_FRAMES, _FRAME_BOXES, _FRAME_RAW_SIZE, _FRAME_ROTATION_K, _resolve_orientation, _topk_peaks
+from .detect_and_embed import N_FRAMES, DetectAndEmbed, _FRAME_BOXES, _FRAME_RAW_SIZE, _FRAME_ROTATION_K, _resolve_orientation, _topk_peaks
+from .model import Embedder
+from .table_detector import TableCenterNet
 
 
 class ResolveOrientationTest(unittest.TestCase):
@@ -93,6 +97,44 @@ class FrameGeometryTest(unittest.TestCase):
         # flip_0 rotates; no single-box frame (modern/old/extended/tall/right/left) does.
         rotated = {name for name, k in zip(FRAME_NAMES, _FRAME_ROTATION_K) if k}
         self.assertEqual(rotated, {"room_0", "room_1", "split_0", "split_1", "aftermath_1", "flip_1"})
+
+
+class ReturnPoseTest(unittest.TestCase):
+    """`return_pose=True` (feat/track-memory) is the one place `DetectAndEmbed.forward` is run
+    end to end in this test file rather than against its private helpers directly -- needed
+    because the invariant under test (pose consistent with the already-built quads) only exists
+    once both are computed together. Random-weight checkpoints keep this fast and download-free;
+    correctness of the detector/embedder themselves is out of scope here (see the module
+    docstring's own crop-math validation)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        root = Path(cls.tmp.name)
+        cls.table_checkpoint = root / "table.pt"
+        cls.embed_checkpoint = root / "embed.pt"
+        torch.save(TableCenterNet(pretrained=False).state_dict(), cls.table_checkpoint)
+        torch.save(Embedder(pretrained=False).state_dict(), cls.embed_checkpoint)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_default_return_is_unchanged_a_three_tuple(self):
+        model = DetectAndEmbed(str(self.embed_checkpoint), native_size=384, max_cards=2, table_checkpoint=str(self.table_checkpoint))
+        out = model(torch.rand(1, 3, 384, 384))
+        self.assertEqual(len(out), 3)
+
+    def test_return_pose_adds_a_fourth_tensor_consistent_with_the_quads(self):
+        model = DetectAndEmbed(str(self.embed_checkpoint), native_size=384, max_cards=2, table_checkpoint=str(self.table_checkpoint))
+        embeddings, scores, quads, pose = model(torch.rand(1, 3, 384, 384), return_pose=True)
+        self.assertEqual(pose.shape, (1, 2, 5))
+        cos2t, sin2t = pose[..., 3], pose[..., 4]
+        torch.testing.assert_close(cos2t**2 + sin2t**2, torch.ones_like(cos2t), atol=1e-4, rtol=0)
+        # A quad's four corners are symmetric around its center by construction, so their mean
+        # reproduces pose's (cx, cy) exactly, up to floating-point noise.
+        torch.testing.assert_close(quads.mean(dim=-2), pose[..., :2], atol=1e-3, rtol=0)
+        self.assertTrue(torch.all(pose[..., 2] > 0))  # short side is a positive pixel length
 
 
 if __name__ == "__main__":

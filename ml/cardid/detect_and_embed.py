@@ -139,7 +139,12 @@ class DetectAndEmbed(nn.Module):
     (N,MAX_CARDS,N_FRAMES,EMBED_DIM), scores (N,MAX_CARDS), quads (N,MAX_CARDS,4,2)) --
     `MAX_CARDS` fixed slots per image, sorted by score, in the *same* full-image pixel
     coordinates `decode_detections` would use. `embeddings[n, k]` is ready to pass to
-    `search.onnx` as-is, in `detect.FRAME_NAMES` order, for slot `k`'s detection."""
+    `search.onnx` as-is, in `detect.FRAME_NAMES` order, for slot `k`'s detection.
+
+    `forward(images, return_pose=True)` additionally returns `pose (N,MAX_CARDS,5) = (cx, cy,
+    short, cos(2*angle), sin(2*angle))` -- the training-only fifth output `track_memory.py`'s
+    `pose_t` needs, kept off the default return so the shipped ONNX export contract (embeddings,
+    scores, quads) is untouched."""
 
     def __init__(
         self,
@@ -179,7 +184,7 @@ class DetectAndEmbed(nn.Module):
         return self
 
     @torch.no_grad()
-    def forward(self, images: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, images: torch.Tensor, return_pose: bool = False):
         n = images.shape[0]
         heat, pose, up = self.table(images)
         cx, cy, short, angle, up_x, up_y, scores = _topk_peaks(heat, pose, up, TABLE_STRIDE, self.max_cards)
@@ -207,4 +212,10 @@ class DetectAndEmbed(nn.Module):
         cos_a, sin_a = torch.cos(angle), torch.sin(angle)
         rot = torch.stack([torch.stack([cos_a, -sin_a], -1), torch.stack([sin_a, cos_a], -1)], dim=-2)  # (B,K,2,2)
         quads = torch.einsum("bkij,bkcj->bkci", rot, local) + torch.stack([cx, cy], -1).unsqueeze(-2)
-        return embeddings, scores, quads
+        if not return_pose:
+            return embeddings, scores, quads
+        # cos(2*angle)/sin(2*angle) from the *resolved* angle equal the network's own raw
+        # (cos2t, sin2t) pose channels exactly -- the +-pi orientation-resolution flip is
+        # invariant under doubling -- so no separate quad-to-pose refit is needed here.
+        pose = torch.stack([cx, cy, short, torch.cos(2 * angle), torch.sin(2 * angle)], dim=-1)
+        return embeddings, scores, quads, pose
