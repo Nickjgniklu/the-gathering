@@ -167,7 +167,7 @@ problem.
 import torch
 x = torch.randn(1, 3, model.native_size, model.native_size)
 torch.onnx.export(
-    model, x, "_raw.onnx",
+    model, x, "detect_and_embed.onnx",
     opset_version=18,
     input_names=["image"],
     output_names=["embeddings", "scores", "quads"],
@@ -175,23 +175,8 @@ torch.onnx.export(
 )
 ```
 
-**Always run this second step too** -- onnxruntime's own graph optimizer, at `ORT_ENABLE_EXTENDED`
-specifically (not `ORT_ENABLE_ALL`, which bakes in hardware-specific transforms like NCHWc conv
-layouts that onnxruntime-web itself warns are only valid on the exact machine that produced them):
-
-```python
-import onnxruntime as ort
-opts = ort.SessionOptions()
-opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
-opts.optimized_model_filepath = "detect_and_embed.onnx"
-ort.InferenceSession("_raw.onnx", opts)  # writes the optimized file as a side effect
-```
-
-This is not optional polish -- see "WebGPU compatibility" below for why skipping it leaves
-several operators in the graph that force a CPU fallback.
-
 Verified (both the single-pass and tiled-fusion variants) to match the torch model to
-floating-point noise via onnxruntime, after this optimization step:
+floating-point noise via onnxruntime:
 
 ```python
 import onnxruntime as ort, numpy as np
@@ -220,44 +205,6 @@ were single-pass 20ms / tiled-fusion 21ms on GPU. Batching all 14 frames' crops 
 but did not meaningfully change CPU, which was already compute- rather than kernel-launch-bound.
 **At ~142ms/frame even on GPU, this is not yet real-time-per-frame** (roughly 7fps) -- worth
 knowing before assuming the frame-hypothesis fix is free.
-
-## WebGPU compatibility: not fully verified, but concretely investigated
-
-If deploying via onnxruntime-web, the goal is normally to run the *whole* graph on the WebGPU
-execution provider -- any node using an operator that provider doesn't implement falls back to
-WASM, and that mixed CPU/GPU execution (with data transfers at every fallback point) usually costs
-more than it looks like from the op count alone. This was checked directly against the actual
-exported graph, not assumed:
-
-1. Loaded the real export (`onnx.load`) and listed every operator actually present, with counts.
-2. Cross-referenced each one against onnxruntime-web's own documented WebGPU operator table
-   (`js/web/docs/webgpu-operators.md` in the `microsoft/onnxruntime` repo).
-
-**Found and fixed**: `Mod`, `Xor`, `And`, and `Not` were not in that table at all, and traced back
-to one spot -- `torch.div(idx, s, rounding_mode="floor")` and `idx % s` in `_topk_peaks`. `idx` and
-`s` are always non-negative in this code (a flat index into a positive-size grid), but PyTorch's
-exporter can't prove that, so it defensively lowers both to full signed-integer correction logic
-for a branch that never actually triggers. Replaced with plain float division + floor +
-subtraction, which needs none of that -- confirmed by direct op-count inspection (0 occurrences of
-all four afterward) and re-verified against the unit tests and `evaluate_detect_and_embed.py`'s
-numbers (identical). `ConstantOfShape` (also not in the table) mostly turned out to be an exporter
-artifact around otherwise-static shapes, not a real dynamic-shape need, and disappears after the
-`ORT_ENABLE_EXTENDED` optimization step above -- confirmed the same way, not assumed.
-
-**Not resolved, and not verifiable from this environment**: `TopK` remains (twice per graph without
-search baked in, once more for the final gallery ranking in `DetectEmbedAndSearch`) and could not
-be removed -- it's fundamental to both peak detection and top-k gallery search, and replacing it
-with an ArgMax-based iterative mask-and-repeat loop (which *would* only use documented-supported
-ops) means 20+ sequential dependent steps instead of one native kernel, a real performance
-tradeoff not attempted here. Its actual WebGPU support status is genuinely unclear from available
-documentation: one source describes it as added to onnxruntime-web's WebGPU EP in a May 2026
-plugin release; the current `webgpu-operators.md` table does not list it. **The only way to
-resolve this for certain is loading these exports in a real browser with the WebGPU EP enabled and
-checking onnxruntime-web's own per-node execution-provider assignment** (it logs or can be queried
-for which EP each node actually ran on) -- not something a Python/CLI environment can verify.
-`GridSample` (14+ occurrences, the operator this project's own `export.py` once flagged as
-uncertain on WebGPU) turned out to be a non-issue: it's supported for opset 16-19, and every export
-here uses opset 18.
 
 ## Known simplifications (all deliberate, all documented as extension points, not dead ends)
 
