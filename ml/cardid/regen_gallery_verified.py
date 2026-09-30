@@ -8,6 +8,14 @@ monkeypatching `image_bank.list_cards` rather than changing `table_scenes.py`'s 
 (which every other dataset generation should keep using unfiltered).
 
     uv run python -m cardid.regen_gallery_verified --gallery H:\the-gathering-cardid\current\arts.json --out H:\the-gathering-cardid\table-scenes-1920 --train 4000 --val 300 --size 1920 --resolution 1920
+
+`--sequences` writes N-frame sequences (`table_scenes.write_sequence_dataset`, for
+`train_track_memory.py`) instead of independent scenes -- the same gallery-verification is
+required there since a track's card must have a true gallery row to train against
+(`track_memory_dataset.py` skips any track that doesn't, but the intended workflow is to never
+produce one in the first place):
+
+    uv run python -m cardid.regen_gallery_verified --gallery H:\the-gathering-cardid\current\arts.json --out H:\the-gathering-cardid\table-sequences --sequences --frames 10 --train 400 --val 60 --size 1280 --resolution 384
 """
 
 from __future__ import annotations
@@ -30,6 +38,8 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=20260926)
     parser.add_argument("--size", type=int, default=1920, help="native render resolution before downscale")
     parser.add_argument("--resolution", type=int, default=1920, help="output image resolution")
+    parser.add_argument("--sequences", action="store_true", help="write N-frame sequences (for train_track_memory.py) instead of independent scenes")
+    parser.add_argument("--frames", type=int, default=10, help="--sequences only: frames per sequence")
     args = parser.parse_args()
 
     gallery_ids = {a["id"] for a in json.loads(args.gallery.read_text(encoding="utf-8"))}
@@ -43,7 +53,10 @@ def main() -> None:
 
     scenes = {"train": args.train, "val": args.val, "test": args.test, "challenge": args.challenge}
     scenes = {k: v for k, v in scenes.items() if v > 0}
-    header = table_scenes.write_dataset(args.out, args.seed, scenes, args.size, args.resolution)
+    if args.sequences:
+        header = table_scenes.write_sequence_dataset(args.out, args.seed, scenes, args.frames, args.size, args.resolution)
+    else:
+        header = table_scenes.write_dataset(args.out, args.seed, scenes, args.size, args.resolution)
     print(json.dumps({k: v for k, v in header.items() if k != "split_rules"}, indent=2))
     print(f"-> {args.out}")
 
