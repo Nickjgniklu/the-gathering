@@ -80,7 +80,7 @@ class TrackMemorySequenceDatasetTest(unittest.TestCase):
         self.frames = torch.zeros(len(card_ids), dtype=torch.int64)
         self.penalties = torch.zeros(len(card_ids))
 
-    def _build_dataset(self, arts_json=None, gallery=None, frames=None, penalties=None) -> TrackMemorySequenceDataset:
+    def _build_dataset(self, arts_json=None, gallery=None, frames=None, penalties=None, device="cpu") -> TrackMemorySequenceDataset:
         gallery_tuple = (
             arts_json if arts_json is not None else self.arts_json,
             gallery if gallery is not None else self.gallery,
@@ -94,6 +94,7 @@ class TrackMemorySequenceDatasetTest(unittest.TestCase):
                 embed_checkpoint=self.embed_checkpoint,
                 gallery_bundle=Path("unused"),
                 native_size=128,
+                device=device,
             )
 
     def test_one_example_per_track_across_every_sequence(self):
@@ -151,6 +152,23 @@ class TrackMemorySequenceDatasetTest(unittest.TestCase):
         # its "short" (index 2) should be a real positive card size, not the stand-in's 42.0.
         self.assertGreater(float(true_poses[0, 2]), 0.0)
         self.assertNotEqual(float(true_poses[0, 2]), 42.0)
+
+    @unittest.skipUnless(torch.cuda.is_available(), "no GPU available on this machine")
+    def test_device_cuda_produces_the_same_shapes_as_cpu_and_returns_cpu_tensors(self):
+        # AMD's native-Windows ROCm wheels disable cudnn/MIOpen (see track_memory_dataset.py's
+        # device docstring); this still exercises the real move-to-device/move-back-to-cpu
+        # plumbing end to end, not just that a matmul runs on the GPU in isolation.
+        cpu_dataset = self._build_dataset(device="cpu")
+        gpu_dataset = self._build_dataset(device="cuda")
+        self.assertEqual(str(gpu_dataset.gallery.device.type), "cuda")
+        embeddings, poses, scores, true_poses, valid, gallery_index = gpu_dataset[0]
+        cpu_embeddings, cpu_poses, cpu_scores, cpu_true_poses, cpu_valid, _ = cpu_dataset[0]
+        for t in (embeddings, poses, scores, true_poses, valid):
+            self.assertEqual(t.device.type, "cpu")  # outputs always land back on cpu, regardless of self.device
+        self.assertEqual(embeddings.shape, cpu_embeddings.shape)
+        self.assertEqual(poses.shape, cpu_poses.shape)
+        self.assertEqual(valid.shape, cpu_valid.shape)
+        self.assertIsInstance(gallery_index, int)
 
 
 if __name__ == "__main__":

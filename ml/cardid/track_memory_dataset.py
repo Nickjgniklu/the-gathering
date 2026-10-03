@@ -42,6 +42,7 @@ from .detect_and_embed import DetectAndEmbed
 from .evaluate_detect_and_embed import load_gallery
 from .scene_geometry import quad_iou, quad_short
 from .tiled_fusion import TiledFusionDetector
+from .training_runtime import disable_cudnn_on_windows_rocm
 
 SCORE_THRESHOLD = 0.3  # a detected slot below this is treated as noise, not a real card, when matching
 IOU_THRESHOLD = 0.5  # same convention as evaluate_tables.per_card_hits
@@ -114,13 +115,26 @@ class TrackMemorySequenceDataset(Dataset):
         score_threshold: float = SCORE_THRESHOLD,
         max_frames: int | None = None,
         limit: int | None = None,
+        device: str = "cpu",
     ):
+        """`device` moves the frozen detector/embedder and the gallery onto that device for every
+        `__getitem__` call -- GPU is not just faster per frame here (modestly: AMD's native-Windows
+        ROCm wheels disable cudnn/MIOpen, see `training_runtime.py`'s own note on this, so the win
+        is ~1.5x, not an order of magnitude), it also replaces the *need* for multiple CPU
+        DataLoader workers (which is what actually bounded this dataset before: each worker holds
+        its own full detector+gallery copy, and that multi-process memory duplication is what was
+        causing OOM kills on a real training run). Use `num_workers=1` (or 0) when `device` is a
+        GPU -- multiple worker processes each opening their own GPU context to share one physical
+        GPU is not a parallelism win, just VRAM/context overhead multiplied by worker count."""
         self.root = manifest_path.parent
         rows = [json.loads(line) for line in manifest_path.read_text(encoding="utf-8").splitlines()]
         self.rows = rows[:limit] if limit else rows
         self.native_size = native_size
         self.score_threshold = score_threshold
         self.max_frames = max_frames or max((row["n_frames"] for row in self.rows), default=1)
+        self.device = torch.device(device)
+        if disable_cudnn_on_windows_rocm(self.device):
+            print("TrackMemorySequenceDataset: ROCm on Windows detected, disabling cudnn/MIOpen (see training_runtime.disable_cudnn_on_windows_rocm)")
 
         if detector == "single-pass":
             self.model = DetectAndEmbed(str(embed_checkpoint), native_size, table_checkpoint=str(table_checkpoint)).eval()
@@ -130,8 +144,10 @@ class TrackMemorySequenceDataset(Dataset):
             tiled = TiledFusionDetector(checkpoint=str(table_checkpoint), native_size=native_size)
             tiled.fusion.load_state_dict(torch.load(fusion_checkpoint, map_location="cpu", weights_only=True))
             self.model = DetectAndEmbed(str(embed_checkpoint), native_size, detector=tiled).eval()
+        self.model = self.model.to(self.device)
 
-        arts, self.gallery, self.frames, self.penalties = load_gallery(gallery_bundle)
+        arts, gallery, frames, penalties = load_gallery(gallery_bundle)
+        self.gallery, self.frames, self.penalties = gallery.to(self.device), frames.to(self.device), penalties.to(self.device)
         id_to_index = {a["id"]: i for i, a in enumerate(arts)}
 
         # Flatten (sequence, track_id) into one example list up front, dropping any track whose
@@ -176,21 +192,25 @@ class TrackMemorySequenceDataset(Dataset):
                 break
             image = cv2.cvtColor(cv2.imread(str(seq_dir / frame_name)), cv2.COLOR_BGR2RGB)
             small = cv2.resize(image, (self.native_size, self.native_size), interpolation=interp)
-            emb, sc, quads, pose = self.model(to_tensor(small).unsqueeze(0), return_pose=True)
+            x = to_tensor(small).unsqueeze(0).to(self.device)
+            emb, sc, quads, pose = self.model(x, return_pose=True)
             emb, sc, quads, pose = emb[0], sc[0], quads[0], pose[0]  # (MAX_CARDS,14,128) (MAX_CARDS,) (MAX_CARDS,4,2) (MAX_CARDS,5)
 
             # The model's own quads are already in native_size pixel space; scale the manifest's
             # ground-truth quads *down* to match (evaluate_detect_and_embed.py's convention),
-            # rather than scaling the model's output up.
+            # rather than scaling the model's output up. .cpu() before .numpy()/.tolist(): a no-op
+            # on CPU, required whenever self.device is a GPU.
             scaled_truth = [{"quad": (np.float32(c["quad"]) * scale).tolist(), "track_id": c["track_id"]} for c in frame_manifest["cards"]]
-            matched = _match_frame([q.numpy() for q in quads], sc.tolist(), scaled_truth, self.score_threshold)
+            matched = _match_frame([q.cpu().numpy() for q in quads], sc.cpu().tolist(), scaled_truth, self.score_threshold)
             slot = matched.get(track_id)
             if slot is None:
                 continue  # a genuine miss this frame: stays invalid/padding
 
-            embeddings[t] = _best_frame_embedding(emb[slot], self.gallery, self.frames, self.penalties)
-            poses[t] = pose[slot]
-            scores[t] = sc[slot]
+            # The pre-allocated output tensors stay on CPU (collate/pinning expect that); only the
+            # per-frame intermediates above (built from a GPU model's output) needed moving back.
+            embeddings[t] = _best_frame_embedding(emb[slot], self.gallery, self.frames, self.penalties).cpu()
+            poses[t] = pose[slot].cpu()
+            scores[t] = sc[slot].cpu()
             true_poses[t] = _quad_pose(np.float32(next(c for c in scaled_truth if c["track_id"] == track_id)["quad"]))
             valid[t] = True
 
