@@ -17,6 +17,21 @@ dependencies = [
 # torch is selected per machine: `uv sync --extra cpu` (default everywhere, what the orb and
 # the capture tool use) or `uv sync --extra rocm` (AMD RX 9070 XT / gfx1201 training box).
 # The extras conflict, so exactly one must be enabled; `uv run` without --extra installs no torch.
+#
+# AMD RX 7900 GRE / gfx1100 (feat/track-memory-gpu's machine) is NOT a third `uv sync` extra --
+# torch==2.13.0+rocm10.0.0's own wheel metadata declares an unconditional dependency on a
+# `triton` build that only ships a Linux wheel, which makes uv's whole-project lock resolution
+# fail outright (not just for that extra -- it broke `uv sync --extra cpu` too, since uv
+# evaluates every declared extra's dependency graph regardless of which one is active). `uv pip
+# install`, which resolves only for the current interpreter/platform rather than a universal
+# lock, correctly skips the unneeded triton dependency and works fine. So gfx1100 setup is a
+# manual two-step, not a `--extra` flag:
+#
+#     uv sync --extra cpu
+#     uv pip install "torch[device-gfx1100]==2.13.0+rocm10.0.0" "torchvision[device-gfx1100]==0.28.0+rocm10.0.0" --index-url https://stable.repo.amd.com/rocm/whl-next/
+#
+# and every `uv run` afterward needs `--no-sync` (otherwise uv re-resolves the lock, which still
+# only knows about the cpu extra, and overwrites the ROCm torch back to the CPU build).
 [project.optional-dependencies]
 cpu = [
     "torch>=2.4",
