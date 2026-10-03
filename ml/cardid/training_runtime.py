@@ -64,6 +64,22 @@ def seed_everything(seed: int) -> None:
     torch.manual_seed(seed)  # also seeds every CUDA/ROCm device
 
 
+def disable_cudnn_on_windows_rocm(device: torch.device) -> bool:
+    """AMD's native-Windows ROCm wheels (pip's amd-torch-device-gfx*, as opposed to the
+    Linux-only system ROCm install) do not bundle the C++ standard headers MIOpen's JIT kernel
+    compiler needs (fails with "'type_traits' file not found" compiling e.g. batch norm).
+    Disabling cudnn/MIOpen falls back to torch's native composite kernels for those ops;
+    matmul/conv2d themselves are unaffected (rocBLAS/MIOpen's precompiled paths, not the JIT
+    one). Remove once AMD ships the missing headers. Called from `setup()` for training/eval
+    scripts and directly from anything that can put a frozen model on a GPU outside that flow
+    (e.g. `track_memory_dataset.py`, constructible standalone). Returns whether it did anything,
+    so a caller can log it only once instead of on every construction."""
+    if device.type == "cuda" and getattr(torch.version, "hip", None) and platform.system() == "Windows" and torch.backends.cudnn.enabled:
+        torch.backends.cudnn.enabled = False
+        return True
+    return False
+
+
 def setup(args: argparse.Namespace, role: str) -> Runtime:
     """Resolve device, counts and seeds from the parsed runtime flags; `role` names the
     workers in the log line ("augmentation", "rendering")."""
@@ -76,14 +92,7 @@ def setup(args: argparse.Namespace, role: str) -> Runtime:
     runtime = Runtime(device=device, workers=args.workers or workers, threads=args.threads or threads, seed=args.seed)
     torch.set_num_threads(runtime.threads)
     seed_everything(runtime.seed)
-    if device.type == "cuda" and getattr(torch.version, "hip", None) and platform.system() == "Windows":
-        # AMD's native-Windows ROCm wheels (pip's amd-torch-device-gfx*, as opposed to the
-        # Linux-only system ROCm install) do not bundle the C++ standard headers MIOpen's
-        # JIT kernel compiler needs (fails with "'type_traits' file not found" compiling
-        # e.g. batch norm). Disabling cudnn/MIOpen falls back to torch's native composite
-        # kernels for those ops; matmul/conv2d themselves are unaffected (rocBLAS/MIOpen's
-        # precompiled paths, not the JIT one). Remove once AMD ships the missing headers.
-        torch.backends.cudnn.enabled = False
+    if disable_cudnn_on_windows_rocm(device):
         print("ROCm on Windows detected: disabling cudnn/MIOpen (JIT kernel compiler is missing headers on this platform)")
     print(f"device: {describe_device(device)}, {runtime.workers} {role} workers, seed {runtime.seed}")
     return runtime
