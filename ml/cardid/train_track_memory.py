@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import torch
@@ -144,6 +145,20 @@ def main() -> None:
         parser.error("--detector tiled-fusion needs --fusion-checkpoint")
     runtime = setup(args, "loading")
     device = runtime.device
+    if device.type != "cpu" and runtime.workers > 0:
+        # TrackMemorySequenceDataset puts the frozen detector itself on `device`: any DataLoader
+        # worker is a separate (spawned, on Windows) process that would need its own GPU context
+        # to share the one physical GPU -- VRAM/context overhead multiplied by worker count, not
+        # a parallelism win -- and, worse, process-global state set in __init__ (specifically
+        # disable_cudnn_on_windows_rocm's torch.backends.cudnn.enabled = False) does not cross
+        # into a separate worker process at all, so a worker silently runs with cudnn still
+        # enabled and hits the exact MIOpen JIT failure that flag exists to avoid. 0 workers
+        # means no separate process: __getitem__ runs in the main process, where that fix (and
+        # the loaded model) actually live. default_counts() doesn't know about any of this (it
+        # assumes the normal case: workers only do CPU-side decode/augmentation while the model
+        # runs in the main process), so override it here instead.
+        print(f"device is {device}: overriding {runtime.workers} loading workers -> 0 (dataset runs the model itself; no separate worker process)")
+        runtime = replace(runtime, workers=0)
 
     run_dir = RUNS_DIR / args.run
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -160,6 +175,7 @@ def main() -> None:
             fusion_checkpoint=args.fusion_checkpoint,
             score_threshold=args.score_threshold,
             limit=limit,
+            device=str(device),
         )
 
     train_set = build_dataset("train", args.train_limit)
